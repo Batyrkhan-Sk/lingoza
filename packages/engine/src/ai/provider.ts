@@ -43,6 +43,8 @@ export interface AiConfig {
   geminiModel?: string;
   groqApiKey?: string;
   groqModel?: string;
+  /** Model used for speech synthesis; separate from the chat model. */
+  ttsModel?: string;
   /** Per-request timeout in ms before falling through to the next provider. */
   timeoutMs?: number;
 }

@@ -50,8 +50,13 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
-      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
       SEED_ON_START: ${SEED_ON_START:-true}
+      # Daily study reminders. The API runs the sweep itself; set REMINDERS=off
+      # only if an external scheduler calls `npm run reminders:run` instead.
+      REMINDERS: ${REMINDERS:-on}
+      REMINDER_INTERVAL_MINUTES: ${REMINDER_INTERVAL_MINUTES:-10}
     expose:
       - "4000"
 

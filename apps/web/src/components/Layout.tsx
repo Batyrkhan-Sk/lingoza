@@ -25,6 +25,7 @@ const SKILL_NAV = [
   { to: "/reading", label: "Reading", icon: "▭" },
   { to: "/writing", label: "Writing", icon: "✎" },
   { to: "/speaking", label: "Speaking", icon: "◉" },
+  { to: "/media", label: "Real Spanish", icon: "▶" },
 ] as const;
 
 const TOOL_NAV = [

@@ -187,7 +187,11 @@ TELEGRAM_WEBHOOK_SECRET=REPLACE_WITH_A_THIRD_RANDOM_STRING
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-flash-latest
 GROQ_API_KEY=
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=openai/gpt-oss-120b
+
+# Daily study reminders — three a day, at hours each learner sets with /remind.
+REMINDERS=on
+REMINDER_INTERVAL_MINUTES=10
 EOF
 
 chmod 600 .env
@@ -243,10 +247,12 @@ curl -F "url=https://lingoza.example.com/api/telegram/webhook" \
      "https://api.telegram.org/botYOUR_BOT_TOKEN/setWebhook"
 ```
 
-Or, from inside the instance where the env is already set:
+Or, from inside the instance where the env is already set. Note this runs the
+**compiled** script: the runtime image ships `dist/` only, so the TypeScript
+source is not present in the container.
 
 ```bash
-docker compose exec api npx tsx apps/api/src/telegram/register.ts
+docker compose exec -T api node apps/api/dist/telegram/register.js
 ```
 
 Confirm Telegram is happy:

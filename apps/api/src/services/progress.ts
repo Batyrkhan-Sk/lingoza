@@ -142,12 +142,25 @@ export async function recordActivity(input: ActivityInput): Promise<ActivityResu
   };
 }
 
+/**
+ * Guarantee a progress row exists for a user.
+ *
+ * Wrapped in a catch because concurrent callers race: Telegram delivers updates
+ * in parallel, and Prisma only compiles an upsert down to an atomic
+ * INSERT … ON CONFLICT under conditions that are easy to fall outside of (an
+ * empty `update` block is one of them). Rather than depend on that
+ * optimisation holding, a losing insert simply reads the row the winner made —
+ * which is correct regardless of how Prisma chooses to execute it.
+ */
 export async function ensureProgress(userId: string) {
-  return prisma.userProgress.upsert({
-    where: { userId },
-    create: { userId },
-    update: {},
-  });
+  // createMany + skipDuplicates compiles to a single
+  // INSERT … ON CONFLICT DO NOTHING, which is genuinely atomic. An upsert
+  // would be the obvious choice, but Prisma only lowers it to that form under
+  // conditions this call falls outside of (an empty `update` block is one), so
+  // it degrades to find-then-create and races — noisily, since the losing
+  // insert is logged as an error before any catch can see it.
+  await prisma.userProgress.createMany({ data: { userId }, skipDuplicates: true });
+  return prisma.userProgress.findUniqueOrThrow({ where: { userId } });
 }
 
 async function upsertDailyGoal(

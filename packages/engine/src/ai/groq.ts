@@ -23,7 +23,7 @@ export class GroqProvider implements LlmProvider {
 
   constructor(
     private readonly apiKey: string,
-    private readonly model: string = "llama-3.3-70b-versatile",
+    private readonly model: string = "openai/gpt-oss-120b",
     private readonly timeoutMs: number = 20_000,
   ) {}
 

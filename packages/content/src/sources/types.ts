@@ -78,3 +78,76 @@ export async function fetchWithTimeout(
     clearTimeout(timer);
   }
 }
+
+// ─── Authentic media ─────────────────────────────────────────────────────────
+//
+// A deliberate constraint runs through all of these: **link and analyse, never
+// republish**. Song lyrics and film subtitles are licensed works, so none are
+// stored or served. What is used instead is freely-licensed prose (Wikipedia,
+// CC-BY-SA), officially-published metadata (TMDB, Deezer), public-domain text
+// (Gutenberg) and podcast feeds meant for syndication — with the learner sent
+// to the rights-holder to consume the work itself.
+
+/** An encyclopedia article — real Spanish prose about a film, show or artist. */
+export interface SourcedEncyclopediaEntry {
+  title: string;
+  description: string | null;
+  /** The lead section: genuine, level-appropriate Spanish prose. */
+  extract: string;
+  url: string;
+  thumbnailUrl: string | null;
+  wordCount: number;
+  estimatedLevel?: string;
+  /** Attribution is a licence condition of CC-BY-SA, not a nicety. */
+  licence: string;
+}
+
+/** A track with a legally embeddable preview clip. */
+export interface SourcedTrack {
+  id: number;
+  title: string;
+  artist: string;
+  album: string | null;
+  coverUrl: string | null;
+  /** 30-second preview supplied by the platform for exactly this purpose. */
+  previewUrl: string | null;
+  durationSeconds: number;
+  /** Where to listen to the whole thing, and read the lyrics legally. */
+  externalUrl: string;
+}
+
+/** A film or series, from official metadata. */
+export interface SourcedFilm {
+  id: number;
+  title: string;
+  originalTitle: string | null;
+  /** The Spanish-language synopsis — authentic reading material in itself. */
+  overview: string;
+  posterUrl: string | null;
+  releaseYear: string | null;
+  isAnimation: boolean;
+  mediaType: "movie" | "tv";
+  rating: number | null;
+}
+
+/** A public-domain book, free to use in full. */
+export interface SourcedBook {
+  id: number;
+  title: string;
+  author: string;
+  /** Plain-text download, genuinely unrestricted. */
+  textUrl: string | null;
+  readUrl: string;
+  downloads: number;
+}
+
+/** A podcast episode from a syndication feed. */
+export interface SourcedEpisode {
+  title: string;
+  description: string;
+  audioUrl: string | null;
+  pageUrl: string;
+  publisher: string;
+  durationSeconds: number | null;
+  publishedAt: Date | null;
+}

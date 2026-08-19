@@ -60,13 +60,34 @@ export class TelegramClient {
     }
   }
 
-  sendMessage(options: SendOptions) {
-    return this.call<{ message_id: number }>("sendMessage", {
+  /**
+   * Send a message, falling back to plain text if Telegram rejects the markup.
+   *
+   * Much of what the bot sends is dynamic — article extracts, song titles,
+   * learner-supplied text — and any of it can contain an unbalanced `*` or `_`
+   * that makes Telegram reject the whole message. Escaping helps but cannot be
+   * exhaustive, and a learner seeing nothing at all is far worse than a learner
+   * seeing unformatted text, so a parse failure retries without formatting.
+   */
+  async sendMessage(options: SendOptions) {
+    const payload = {
       chat_id: options.chatId,
       text: options.text,
-      parse_mode: options.parseMode ?? "Markdown",
       disable_web_page_preview: options.disablePreview ?? true,
       ...(options.keyboard ? { reply_markup: { inline_keyboard: options.keyboard } } : {}),
+    };
+
+    const sent = await this.call<{ message_id: number }>("sendMessage", {
+      ...payload,
+      parse_mode: options.parseMode ?? "Markdown",
+    });
+    if (sent) return sent;
+
+    // Strip the markers as well as dropping parse_mode, so the reader does not
+    // get a message full of stray asterisks and backslashes.
+    return this.call<{ message_id: number }>("sendMessage", {
+      ...payload,
+      text: stripMarkdown(options.text),
     });
   }
 
@@ -80,6 +101,86 @@ export class TelegramClient {
       disable_web_page_preview: true,
       ...(options.keyboard ? { reply_markup: { inline_keyboard: options.keyboard } } : {}),
     });
+  }
+
+  /**
+   * Send audio by URL — Telegram fetches it from the publisher itself, so
+   * preview clips and podcast episodes are never proxied through this server.
+   */
+  sendAudio(options: {
+    chatId: string | number;
+    audioUrl: string;
+    caption?: string;
+    title?: string;
+    performer?: string;
+    keyboard?: InlineKeyboard;
+  }) {
+    return this.call("sendAudio", {
+      chat_id: options.chatId,
+      audio: options.audioUrl,
+      ...(options.caption ? { caption: options.caption, parse_mode: "Markdown" } : {}),
+      ...(options.title ? { title: options.title } : {}),
+      ...(options.performer ? { performer: options.performer } : {}),
+      ...(options.keyboard ? { reply_markup: { inline_keyboard: options.keyboard } } : {}),
+    });
+  }
+
+  /**
+   * Send audio bytes as a voice note.
+   *
+   * Voice notes get inline playback, a waveform and Telegram's own speed
+   * control — which is exactly what a learner wants when replaying a word.
+   * That rendering requires OGG/Opus; anything else has to go as a file, so
+   * the caller passes the format and this picks the right method.
+   */
+  async sendVoiceNote(options: {
+    chatId: string | number;
+    audio: Uint8Array;
+    format: "ogg" | "wav";
+    caption?: string;
+    filename?: string;
+    keyboard?: InlineKeyboard;
+  }) {
+    if (!this.configured) {
+      console.warn("[telegram] sendVoice skipped — TELEGRAM_BOT_TOKEN is not set");
+      return null;
+    }
+
+    const isVoice = options.format === "ogg";
+    const method = isVoice ? "sendVoice" : "sendAudio";
+    const field = isVoice ? "voice" : "audio";
+
+    const form = new FormData();
+    form.append("chat_id", String(options.chatId));
+    if (options.caption) {
+      form.append("caption", options.caption);
+      form.append("parse_mode", "Markdown");
+    }
+    if (options.keyboard) {
+      form.append("reply_markup", JSON.stringify({ inline_keyboard: options.keyboard }));
+    }
+    form.append(
+      field,
+      // Uint8Array is an ArrayBufferView, which Blob accepts directly.
+      new Blob([options.audio], { type: isVoice ? "audio/ogg" : "audio/wav" }),
+      options.filename ?? `pronunciation.${options.format}`,
+    );
+
+    try {
+      const response = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
+        method: "POST",
+        body: form,
+      });
+      const payload = (await response.json()) as { ok: boolean; description?: string };
+      if (!payload.ok) {
+        console.error(`[telegram] ${method} failed: ${payload.description}`);
+        return null;
+      }
+      return payload;
+    } catch (error) {
+      console.error(`[telegram] ${method} threw:`, error);
+      return null;
+    }
   }
 
   answerCallback(callbackId: string, text?: string) {
@@ -108,15 +209,28 @@ export class TelegramClient {
         { command: "vocabulary", description: "Browse your vocabulary" },
         { command: "practice", description: "Grammar practice" },
         { command: "hook", description: "Memory hook for a word" },
+        { command: "explain", description: "Break down a line of Spanish" },
+        { command: "say", description: "Hear how something is pronounced" },
+        { command: "media", description: "Real Spanish: films, music, articles" },
+        { command: "watch", description: "Films and cartoons in Spanish" },
+        { command: "podcast", description: "Spanish podcasts to listen to" },
         { command: "speak", description: "Conversation with your AI tutor" },
         { command: "progress", description: "Your progress" },
         { command: "stats", description: "Detailed statistics" },
+        { command: "remind", description: "Daily reminder times" },
       ],
     });
   }
 }
 
 export const telegram = new TelegramClient();
+
+/** Remove markdown markers for the plain-text fallback. */
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/\\([_*`\[\]])/g, "$1")
+    .replace(/[*_`]/g, "");
+}
 
 /** Escape text that will be sent with Markdown parse mode. */
 export function escapeMarkdown(text: string): string {

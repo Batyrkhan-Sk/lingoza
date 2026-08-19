@@ -20,10 +20,13 @@ export class AiClient {
   private readonly providers: LlmProvider[];
 
   constructor(config: AiConfig = {}) {
-    const timeout = config.timeoutMs ?? 20_000;
+    // 45s: the longer generations — line analysis, writing marking — were
+    // being aborted mid-response at 20s, which then fell through to the
+    // fallback provider unnecessarily.
+    const timeout = config.timeoutMs ?? 45_000;
     this.providers = [
       new GeminiProvider(config.geminiApiKey ?? "", config.geminiModel ?? "gemini-flash-latest", timeout),
-      new GroqProvider(config.groqApiKey ?? "", config.groqModel ?? "llama-3.3-70b-versatile", timeout),
+      new GroqProvider(config.groqApiKey ?? "", config.groqModel ?? "openai/gpt-oss-120b", timeout),
     ].filter((p) => p.available);
   }
 

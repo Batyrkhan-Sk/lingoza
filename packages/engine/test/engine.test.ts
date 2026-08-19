@@ -21,6 +21,13 @@ import {
   shouldOfferMnemonic,
   rankMnemonics,
   assessKeywordMnemonic,
+  parseReminderHours,
+  scheduleFor,
+  dueReminder,
+  composeNudge,
+  shouldSend,
+  localHour,
+  type NudgeInput,
   type PlacementAnswer,
   type LearnerSnapshot,
   type Mnemonic,
@@ -497,5 +504,141 @@ describe("memory hooks", () => {
       imagery: "A terrible mess everywhere you look",
     });
     assert.equal(quality.ok, false, "imagery must contain the meaning or it links to nothing");
+  });
+});
+
+
+describe("reminder scheduling", () => {
+  test("falls back to three sensible slots when the setting is junk", () => {
+    assert.deepEqual(parseReminderHours("banana"), [9, 13, 20]);
+    assert.deepEqual(parseReminderHours(""), [9, 13, 20]);
+    assert.deepEqual(parseReminderHours("25,-3"), [9, 13, 20]);
+  });
+
+  test("sorts, de-duplicates and caps the hours", () => {
+    assert.deepEqual(parseReminderHours("20, 9, 13, 9"), [9, 13, 20]);
+    assert.equal(parseReminderHours("1,2,3,4,5,6,7,8").length, 6);
+  });
+
+  test("assigns first/last their role regardless of the clock", () => {
+    // A night learner's day opens at 22:00 and closes at 07:00.
+    assert.deepEqual(scheduleFor("22,1,7").slots, ["kickoff", "micro", "closeout"]);
+    assert.deepEqual(scheduleFor("9").slots, ["kickoff"]);
+    assert.deepEqual(scheduleFor("21").slots, ["closeout"]);
+  });
+
+  test("reads the hour in the learner's timezone, not the server's", () => {
+    const noonUtc = new Date("2026-08-19T12:00:00Z");
+    assert.equal(localHour(noonUtc, "UTC"), 12);
+    assert.equal(localHour(noonUtc, "America/New_York"), 8);
+    assert.equal(localHour(noonUtc, "Asia/Tokyo"), 21);
+    assert.equal(localHour(new Date("2026-08-19T00:30:00Z"), "UTC"), 0);
+  });
+
+  test("fires inside the grace window and not before the hour", () => {
+    const hours = "9,13,20";
+    const at = (iso: string) => dueReminder({ now: new Date(iso), timezone: "UTC", reminderHours: hours });
+
+    assert.equal(at("2026-08-19T09:00:00Z")?.slot, "kickoff");
+    assert.equal(at("2026-08-19T09:25:00Z")?.slot, "kickoff");
+    assert.equal(at("2026-08-19T09:45:00Z"), null, "past the grace window");
+    assert.equal(at("2026-08-19T08:59:00Z"), null, "an hour must not fire early");
+    assert.equal(at("2026-08-19T13:05:00Z")?.slot, "micro");
+    assert.equal(at("2026-08-19T20:05:00Z")?.slot, "closeout");
+  });
+
+  test("a missed slot is not delivered late alongside the current one", () => {
+    // Server was down all morning and comes back at 20:10: the learner gets
+    // the evening nudge only, not a pile of stale ones.
+    const due = dueReminder({
+      now: new Date("2026-08-19T20:10:00Z"),
+      timezone: "UTC",
+      reminderHours: "9,13,20",
+    });
+    assert.equal(due?.hour, 20);
+  });
+
+  test("the dedupe key is stable per learner, per day, per slot", () => {
+    const due = dueReminder({
+      now: new Date("2026-08-19T13:02:00Z"),
+      timezone: "UTC",
+      reminderHours: "9,13,20",
+    })!;
+    assert.equal(due.dedupeKey("u1", "2026-08-19"), "reminder:u1:2026-08-19:13");
+    assert.notEqual(due.dedupeKey("u1", "2026-08-19"), due.dedupeKey("u1", "2026-08-20"));
+  });
+});
+
+describe("reminder wording", () => {
+  const base: NudgeInput = {
+    slot: "kickoff",
+    displayName: "Ana Ruiz",
+    level: "B1",
+    streak: 4,
+    studiedToday: false,
+    wordsDue: 12,
+    itemsRemaining: 5,
+    totalItems: 5,
+    targetMinutes: 20,
+  };
+
+  test("the morning nudge leads with the plan and offers to start it", () => {
+    const nudge = composeNudge(base);
+    assert.equal(nudge.action, "daily");
+    assert.match(nudge.body, /Ana/);
+    assert.match(nudge.body, /20 minutes/);
+    assert.match(nudge.body, /12 words due/);
+  });
+
+  test("the midday nudge is the exercise, not an advert for it", () => {
+    const nudge = composeNudge({
+      ...base,
+      slot: "micro",
+      drillWord: { spanish: "el fregadero", pronunciation: "el fre-ga-DE-ro" },
+    });
+    assert.equal(nudge.action, "drill");
+    assert.match(nudge.body, /fregadero/);
+    assert.equal(nudge.preformatted, true, "its markdown must survive to Telegram");
+  });
+
+  test("the phrase of the day keeps its formatting too", () => {
+    const nudge = composeNudge({
+      ...base,
+      slot: "micro",
+      phraseOfDay: { spanish: "¿Qué tal?", english: "How's it going?" },
+    });
+    assert.equal(nudge.preformatted, true);
+    assert.match(nudge.body, /¿Qué tal\?/);
+  });
+
+  test("nudges carrying learner text are left for the caller to escape", () => {
+    const nudge = composeNudge({ ...base, continueLesson: "Ser_vs_estar" });
+    assert.notEqual(nudge.preformatted, true);
+  });
+
+  test("an empty evening warns about the streak specifically", () => {
+    const nudge = composeNudge({ ...base, slot: "closeout" });
+    assert.equal(nudge.kind, "streak");
+    assert.match(nudge.body, /4-day streak/);
+  });
+
+  test("a finished day is congratulated, never nagged", () => {
+    const nudge = composeNudge({
+      ...base,
+      slot: "closeout",
+      studiedToday: true,
+      itemsRemaining: 0,
+    });
+    assert.equal(nudge.kind, "report");
+    assert.equal(nudge.action, "progress");
+    assert.doesNotMatch(nudge.body, /still time|don't forget/i);
+  });
+
+  test("nothing is sent in the evening when there is nothing to say", () => {
+    const done = { ...base, slot: "closeout" as const, studiedToday: true, itemsRemaining: 0 };
+    assert.equal(shouldSend({ ...done, streak: 0 }), false);
+    assert.equal(shouldSend(done), true, "a live streak is worth a word");
+    assert.equal(shouldSend({ ...done, studiedToday: false }), true);
+    assert.equal(shouldSend({ ...base, slot: "micro" }), true, "the drill always has value");
   });
 });

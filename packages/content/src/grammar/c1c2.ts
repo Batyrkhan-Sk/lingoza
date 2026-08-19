@@ -57,5 +57,29 @@ export const C1C2_TOPICS: GrammarTopicEntry[] = [
     mistakes: [
       { wrong: "Using literary word order in casual speech", right: "Matching register to context", explanation: "Marked constructions in a bar sound affected rather than sophisticated." },
     ],
-  }
+  },
+  {
+    slug: "caribbean-phonology",
+    title: "Caribbean Spanish: why you cannot hear the words",
+    levelCode: "B2",
+    category: "pronunciation",
+    explanation:
+      "A learner who has studied only textbook Spanish can know every word in a Puerto Rican, Cuban or Dominican sentence and still hear an unbroken stream. The vocabulary is not the problem — the *endings* are missing.\n\nCaribbean Spanish systematically erodes consonants that peninsular Spanish keeps. Four changes account for most of it:\n\n**1. Final -s becomes an h, or vanishes.** *Estoy* → *ehtoy*. *Los amigos* → *loh amigo*. This is the big one, because -s is what marks plurals and the *tú* form of every verb.\n\n**2. Intervocalic -d- disappears.** *Todo* → *to'*. *Para* → *pa'*. *Cansado* → *cansao*. *Nada* → *na'*.\n\n**3. -r becomes -l at the end of a syllable.** *Puerto* → *puelto*. *Verdad* → *veldá*.\n\n**4. Final -n becomes nasal, and consonants at the end of words drop.** *Usted* → *usté*.\n\nNone of this is sloppy or uneducated speech — it is the regular phonology of tens of millions of speakers, including on the news. It is only unintelligible if you were taught that Spanish is pronounced the way it is spelled.",
+    whenToUse:
+      "Any time you listen to Caribbean speakers: Puerto Rico, Cuba, the Dominican Republic, coastal Venezuela and Colombia, and much of Andalusia — plus most reggaetón and salsa.",
+    formula: "-s → h/∅ · -d- → ∅ · -r → -l · final consonants weaken",
+    examples: [
+      { spanish: "¿Cómo estás? → ¿Cómo etá?", english: "How are you?", note: "Both -s sounds gone. The question is only recognisable from intonation." },
+      { spanish: "Para → pa'", english: "for / to", note: "So common it is often written this way deliberately.", realWorld: true },
+      { spanish: "Todo bien → To' bien", english: "All good", realWorld: true },
+      { spanish: "Estoy cansado → Ehtoy cansao", english: "I'm tired", note: "Two different changes in one short phrase." },
+      { spanish: "Vamos a la playa → Vamo' a la playa", english: "Let's go to the beach", note: "Losing the -s of vamos does not change the meaning — context carries it." },
+      { spanish: "Verdad → veldá", english: "truth", note: "-r → -l, then the final -d drops.", realWorld: true },
+    ],
+    mistakes: [
+      { wrong: "Assuming 'pa' is a different word", right: "pa' = para", explanation: "The apostrophe marks what was removed. Reading it back as the full word makes the sentence parse instantly." },
+      { wrong: "Hearing 'tú tiene' as a grammar error", right: "tú tienes, with the -s aspirated", explanation: "The -s is still grammatically there; it just is not pronounced. Speakers are not dropping agreement." },
+      { wrong: "Trying to imitate the dropped consonants too early", right: "Understand it first, produce standard Spanish", explanation: "Comprehension and production are separate skills here. Learn to hear it; keep speaking clearly until the dialect is genuinely yours." },
+    ],
+  },
 ];

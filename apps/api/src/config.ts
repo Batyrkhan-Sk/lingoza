@@ -37,7 +37,9 @@ export const config = {
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     geminiModel: process.env.GEMINI_MODEL ?? "gemini-flash-latest",
     groqApiKey: process.env.GROQ_API_KEY ?? "",
-    groqModel: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
+    groqModel: process.env.GROQ_MODEL ?? "openai/gpt-oss-120b",
+    /** Speech synthesis for pronunciation; uses the same Gemini key. */
+    ttsModel: process.env.GEMINI_TTS_MODEL ?? "gemini-2.5-flash-preview-tts",
   },
 
   telegram: {
@@ -45,8 +47,26 @@ export const config = {
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
   },
 
+  reminders: {
+    /** Set REMINDERS=off to stop the bot nudging anyone (local dev, CI). */
+    enabled: process.env.REMINDERS !== "off",
+    /**
+     * How often the sweep looks for learners whose reminder hour has just
+     * passed. Finer than the grace window in the engine, so no slot is missed.
+     */
+    intervalMinutes: Math.max(1, Number(process.env.REMINDER_INTERVAL_MINUTES ?? 10)),
+  },
+
   /** Disable outbound content sourcing (offline dev, CI). */
   sourcingEnabled: process.env.CONTENT_SOURCING !== "off",
+
+  media: {
+    /**
+     * Free key from themoviedb.org. Optional — without it films and cartoons
+     * report themselves unavailable and every other media source still works.
+     */
+    tmdbApiKey: process.env.TMDB_API_KEY ?? "",
+  },
 
   /**
    * Serve the built SPA from this process. On by default in production (one

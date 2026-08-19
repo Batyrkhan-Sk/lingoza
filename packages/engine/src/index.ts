@@ -19,6 +19,7 @@ export * from "./learning/gamification.js";
 export * from "./learning/lesson-session.js";
 export * from "./learning/mistakes.js";
 export * from "./learning/mnemonics.js";
+export * from "./learning/reminders.js";
 
 export * from "./ai/provider.js";
 export * from "./ai/client.js";
@@ -27,3 +28,5 @@ export * from "./ai/writing.js";
 export * from "./ai/speaking.js";
 export * from "./ai/lookup.js";
 export * from "./ai/mnemonics.js";
+export * from "./ai/tts.js";
+export * from "./ai/explain.js";

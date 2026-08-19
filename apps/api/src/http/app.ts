@@ -9,6 +9,7 @@ import { authRoutes } from "./routes/auth.js";
 import { learnRoutes } from "./routes/learn.js";
 import { practiceRoutes } from "./routes/practice.js";
 import { studyRoutes } from "./routes/study.js";
+import { authenticRoutes } from "./routes/authentic.js";
 import { telegramRoutes } from "../telegram/webhook.js";
 
 /**
@@ -62,6 +63,7 @@ export function createApp(): Hono {
   app.route("/api", learnRoutes);
   app.route("/api", practiceRoutes);
   app.route("/api", studyRoutes);
+  app.route("/api", authenticRoutes);
   app.route("/api/telegram", telegramRoutes);
 
   /**

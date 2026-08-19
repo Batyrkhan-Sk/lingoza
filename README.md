@@ -114,7 +114,7 @@ Sourcing never blocks a request. If a source is unreachable, the learner sees th
 GEMINI_API_KEY="…"
 GEMINI_MODEL="gemini-flash-latest"   # or a pinned Flash revision
 GROQ_API_KEY="…"
-GROQ_MODEL="llama-3.3-70b-versatile"
+GROQ_MODEL="openai/gpt-oss-120b"
 ```
 
 With no key at all, the tutor cannot converse and says so plainly, while writing still gets mechanical checking and speaking still gets transcript-based analysis. The UI always states which produced a score, and never presents a fallback result as a full assessment.
@@ -130,9 +130,28 @@ With no key at all, the tutor cannot converse and says so plainly, while writing
 npm run telegram:register --workspace @lingoza/api
 ```
 
-Commands: `/start` `/register` `/daily` `/lesson` `/review` `/vocabulary` `/practice` `/speak` `/progress` `/stats` — almost everything is driven by inline buttons rather than typing.
+Commands: `/start` `/register` `/daily` `/lesson` `/review` `/vocabulary` `/practice` `/speak` `/progress` `/stats` `/remind` — almost everything is driven by inline buttons rather than typing.
 
 A chat that has never been linked gets its own account, so someone can start learning entirely in Telegram. `/link CODE` (code from the web app's Settings) attaches the chat to an existing account.
+
+### Daily reminders
+
+The bot nudges three times a day, at hours the learner chooses (`/remind 8 13 21`, or the presets in the web app's Settings), interpreted in their own timezone. Position in the day decides what each one is, so a learner who studies nights gets the same three *kinds* of message at their own hours:
+
+| Slot | What arrives |
+|---|---|
+| First | Today's plan — how long it takes, what's due, one button to start |
+| Middle | A single vocabulary card, answerable in the chat. The reminder *is* the review |
+| Last | Only if the day is still empty: how close the streak is to breaking. A finished day gets a one-line recap, or nothing at all |
+
+The API sweeps every 10 minutes and delivers whichever slot a learner has just passed — one at a time, so an outage never produces a burst of stale nudges. Delivery is claimed through a unique key on `Notification`, which is what makes a restart, a manual run and a second replica all safe.
+
+```bash
+REMINDERS=off                  # stop the sweep entirely
+REMINDER_INTERVAL_MINUTES=10   # how often it looks
+
+npm run reminders:run --workspace @lingoza/api   # send one sweep now
+```
 
 ---
 
@@ -142,6 +161,7 @@ A chat that has never been linked gets its own account, so someone can start lea
 |---|---|
 | `npm run dev` | API and web together |
 | `npm run build` | Build every workspace |
+| `npm run reminders:run -w @lingoza/api` | Send one round of due reminders and exit |
 | `npm run typecheck` | Typecheck everything |
 | `npm test` | Engine test suite |
 | `npm run content:verify` | Verify the curriculum |

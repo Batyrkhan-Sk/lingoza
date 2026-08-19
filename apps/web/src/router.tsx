@@ -15,6 +15,7 @@ import { TutorPage } from "./pages/Tutor";
 import { ProgressPage } from "./pages/Progress";
 import { DailyPage } from "./pages/Daily";
 import { PracticePage } from "./pages/Practice";
+import { MediaPage } from "./pages/RealSpanish";
 import { SettingsPage } from "./pages/Settings";
 
 /**
@@ -68,6 +69,7 @@ const routeTree = rootRoute.addChildren([
     createRoute({ getParentRoute: parent, path: "/grammar/$slug", component: GrammarTopicPage }),
     createRoute({ getParentRoute: parent, path: "/listening", component: ListeningPage }),
     createRoute({ getParentRoute: parent, path: "/reading", component: ReadingPage }),
+    createRoute({ getParentRoute: parent, path: "/media", component: MediaPage }),
     createRoute({ getParentRoute: parent, path: "/writing", component: WritingPage }),
     createRoute({ getParentRoute: parent, path: "/speaking", component: SpeakingPage }),
     createRoute({ getParentRoute: parent, path: "/tutor", component: TutorPage }),

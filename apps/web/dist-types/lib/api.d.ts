@@ -35,6 +35,8 @@ export interface Me {
     timezone: string;
     telegramLinked: boolean;
     remindersEnabled: boolean;
+    /** Local hours the Telegram bot nudges at, e.g. [9, 13, 20]. */
+    reminderHours: number[];
     level: CefrLevel;
     needsPlacement: boolean;
 }

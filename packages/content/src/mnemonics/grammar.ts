@@ -152,4 +152,26 @@ export const GRAMMAR_MNEMONICS: GrammarMnemonicEntry[] = [
     explanation:
       "Say them in that order a few times and they stop being exceptions. Everything else is regular *-ado/-ido*.",
   },
+  {
+    grammarSlug: "caribbean-phonology",
+    kind: "acronym",
+    hook: "**S-D-R** — the three letters the Caribbean eats: final **S**, middle **D**, syllable-final **R**.",
+    explanation:
+      "*Ehtoy* (S), *cansao* (D), *puelto* (R). When a word sounds wrong, try putting one of those three back and it usually becomes a word you already know.",
+  },
+  {
+    grammarSlug: "caribbean-phonology",
+    kind: "contrast",
+    hook: "An apostrophe means a letter was eaten. **pa'** = para · **to'** = todo · **na'** = nada.",
+    explanation:
+      "Written reggaetón lyrics mark the deletion for you. Read the apostrophe as 'something was here' and the line parses.",
+  },
+  {
+    grammarSlug: "caribbean-phonology",
+    kind: "story",
+    hook: "The -s is still there grammatically — it just went quiet.",
+    imagery: "A plural -s standing at the back of the word with its hand over its mouth.",
+    explanation:
+      "*Tú tiene* is not a mistake and not a missing agreement. Hearing it as 'tienes with the s whispered' keeps your own grammar intact while you learn to follow theirs.",
+  },
 ];

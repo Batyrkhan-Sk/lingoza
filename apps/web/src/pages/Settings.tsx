@@ -79,6 +79,53 @@ export function SettingsPage() {
 
       <Card className="mb">
         <div className="row-between mb">
+          <h2>Daily reminders</h2>
+          <Badge tone={user.remindersEnabled ? "success" : "warning"}>
+            {user.remindersEnabled ? "On" : "Off"}
+          </Badge>
+        </div>
+        <p className="small secondary">
+          The Telegram bot nudges you at these hours, in your own timezone ({user.timezone}). Each
+          one does a different job: the first hands you today's plan, the middle one is a single
+          review card you can answer in the chat, and the last only arrives if the day is still
+          empty.
+        </p>
+
+        {!user.telegramLinked && (
+          <p className="small secondary mt">
+            Connect Telegram below to start receiving them.
+          </p>
+        )}
+
+        <div className="row wrap mt" style={{ gap: 6 }}>
+          {REMINDER_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              className={`btn ${sameHours(user.reminderHours, preset.hours) ? "btn-primary" : ""}`}
+              onClick={() => save.mutate({ reminderHours: preset.hours, remindersEnabled: true })}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="row wrap mt" style={{ gap: 6 }}>
+          <button
+            className="btn"
+            onClick={() => save.mutate({ remindersEnabled: !user.remindersEnabled })}
+          >
+            {user.remindersEnabled ? "Turn reminders off" : "Turn reminders on"}
+          </button>
+          {user.timezone !== browserTimezone() && (
+            <button className="btn" onClick={() => save.mutate({ timezone: browserTimezone() })}>
+              Use my timezone ({browserTimezone()})
+            </button>
+          )}
+        </div>
+      </Card>
+
+      <Card className="mb">
+        <div className="row-between mb">
           <h2>Telegram</h2>
           {user.telegramLinked && <Badge tone="success">Connected</Badge>}
         </div>
@@ -117,4 +164,30 @@ export function SettingsPage() {
       </Card>
     </div>
   );
+}
+
+/**
+ * Reminder presets rather than a free-form time picker.
+ *
+ * The exact minute does not matter — what matters is that the three nudges are
+ * spread across the learner's waking day, and a picker makes it easy to end up
+ * with three reminders inside one hour.
+ */
+const REMINDER_PRESETS = [
+  { label: "🌅 07 · 12 · 19", hours: [7, 12, 19] },
+  { label: "☀️ 09 · 13 · 20", hours: [9, 13, 20] },
+  { label: "🌆 10 · 15 · 22", hours: [10, 15, 22] },
+  { label: "🌙 12 · 18 · 23", hours: [12, 18, 23] },
+];
+
+function sameHours(a: number[] | undefined, b: number[]): boolean {
+  return (a ?? []).length === b.length && (a ?? []).every((hour, index) => hour === b[index]);
+}
+
+function browserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
 }

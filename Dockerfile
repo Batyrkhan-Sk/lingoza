@@ -42,8 +42,10 @@ RUN npm run build --workspace @lingoza/engine \
 # ─── Stage 2: runtime ────────────────────────────────────────────────────────
 FROM node:22-slim AS runtime
 
+# ffmpeg converts pronunciation audio to OGG/Opus, which is the only format
+# Telegram renders as an inline voice note rather than a file attachment.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl ca-certificates tini \
+  && apt-get install -y --no-install-recommends openssl ca-certificates tini ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production

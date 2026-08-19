@@ -2,6 +2,7 @@ import {
   LESSON_SECTIONS,
   overallScore,
   parseLevel,
+  parseReminderHours,
   type LessonSection,
   type TutorScenario,
 } from "@lingoza/engine";
@@ -13,6 +14,21 @@ import { getDueQueue, reviewVocabulary } from "../services/vocabulary.js";
 import { completeLessonSection, getLesson, getNextLesson, startLesson } from "../services/learning.js";
 import { submitExercise } from "../services/assessment.js";
 import { sendConversationMessage, startConversation } from "../services/practice.js";
+import { getSpeech, synthesisAvailable } from "../services/speech.js";
+import { explainSpanishLine } from "../services/authentic.js";
+import {
+  browseFilms,
+  browsePodcasts,
+  getMediaOverview,
+  openArticle,
+  recordMediaActivity,
+  searchMedia,
+} from "../services/authentic.js";
+import {
+  getReminderSettings,
+  sendTestReminder,
+  updateReminderSettings,
+} from "../services/reminders.js";
 import {
   createWordMnemonic,
   getGrammarMnemonics,
@@ -75,28 +91,36 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
 async function resolveUser(from: { id: number; username?: string; first_name?: string }, chatId: number) {
   const telegramId = String(from.id);
 
-  const existing = await prisma.user.findUnique({ where: { telegramId } });
-  if (existing) {
-    if (existing.telegramChatId !== String(chatId)) {
-      await prisma.user.update({
-        where: { id: existing.id },
-        data: { telegramChatId: String(chatId) },
-      });
-    }
-    return existing;
+  const create = {
+    displayName: from.first_name ?? from.username ?? "Learner",
+    telegramId,
+    telegramUsername: from.username ?? null,
+    telegramChatId: String(chatId),
+    createdVia: "telegram",
+  };
+
+  // Telegram delivers updates in parallel, so a learner tapping two buttons at
+  // once races two inserts for the same chat.
+  //
+  // The upsert deliberately has no nested writes: with one, Prisma cannot use
+  // Postgres's atomic INSERT … ON CONFLICT and silently falls back to a
+  // find-then-create, which is exactly the race we are trying to close. The
+  // progress row is therefore created separately, below.
+  let user;
+  try {
+    user = await prisma.user.upsert({
+      where: { telegramId },
+      create,
+      update: { telegramChatId: String(chatId) },
+    });
+  } catch {
+    // Belt and braces: if a concurrent insert still wins, the row now exists,
+    // so read it rather than failing the learner's command.
+    user = await prisma.user.findUniqueOrThrow({ where: { telegramId } });
   }
 
-  const created = await prisma.user.create({
-    data: {
-      displayName: from.first_name ?? from.username ?? "Learner",
-      telegramId,
-      telegramUsername: from.username ?? null,
-      telegramChatId: String(chatId),
-      createdVia: "telegram",
-    },
-  });
-  await ensureProgress(created.id);
-  return created;
+  await ensureProgress(user.id);
+  return user;
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
@@ -127,12 +151,28 @@ async function handleMessage(message: NonNullable<TelegramUpdate["message"]>): P
     case "/hook":
     case "/mnemonic":
       return sendHookLookup(chat.id, user.id, args.join(" "));
+    case "/say":
+    case "/pronounce":
+      return sendPronunciation(chat.id, args.join(" "), { dialect: user.dialectPreference as "es-ES" | "es-419" });
+    case "/explain":
+    case "/x":
+      return sendExplanation(chat.id, user.id, args.join(" "));
+    case "/media":
+      return sendMedia(chat.id, user.id, args.join(" "));
+    case "/watch":
+      return sendWatchList(chat.id, user.id);
+    case "/podcast":
+    case "/podcasts":
+      return sendPodcasts(chat.id, user.id);
     case "/speak":
       return sendScenarioPicker(chat.id);
     case "/progress":
       return sendProgress(chat.id, user.id);
     case "/stats":
       return sendStats(chat.id, user.id);
+    case "/remind":
+    case "/reminders":
+      return sendReminderSettings(chat.id, user.id, args.join(" "));
     case "/help":
       return sendWelcome(chat.id, user.displayName);
     default:
@@ -205,6 +245,10 @@ function mainMenu(): InlineKeyboard {
     [
       { text: "💬 Talk to tutor", callback_data: "speak" },
       { text: "📊 Progress", callback_data: "progress" },
+    ],
+    [
+      { text: "🎬 Real Spanish", callback_data: "media" },
+      { text: "🎧 Podcasts", callback_data: "podcast" },
     ],
   ];
 }
@@ -451,6 +495,328 @@ async function sendHookLookup(chatId: number, userId: string, query: string): Pr
   await sendWordHook(chatId, userId, word.id);
 }
 
+/**
+ * Real Spanish (§ authentic media).
+ *
+ * Same constraint as the web app: lyrics and subtitles are licensed works and
+ * are never sent. What the bot delivers is the preview clip the platform
+ * publishes for playback, freely-licensed prose about the work, and a link to
+ * the original.
+ */
+async function sendMedia(chatId: number, userId: string, query: string): Promise<void> {
+  if (!query.trim()) {
+    const overview = await getMediaOverview(userId);
+    const artists = overview.suggestions.artists.slice(0, 5);
+    const watching = overview.suggestions.watching.slice(0, 4);
+
+    await telegram.sendMessage({
+      chatId,
+      text:
+        "*Real Spanish*\n\n" +
+        "Films, music and articles made for Spanish speakers — not for learners.\n\n" +
+        "Send `/media <name>` — for example `/media Coco` or `/media Bad Bunny`.\n\n" +
+        (artists.length > 0
+          ? "*Listen, easiest first*\n" +
+            artists.map((a) => `• ${escapeMarkdown(a.name)} (${a.level}) — ${escapeMarkdown(a.why)}`).join("\n") +
+            "\n\n"
+          : "") +
+        (watching.length > 0
+          ? "*Watch*\n" +
+            watching.map((w) => `• ${escapeMarkdown(w.title)} (${w.level}) — ${escapeMarkdown(w.why)}`).join("\n")
+          : ""),
+      keyboard: [
+        [
+          { text: "🎬 Films", callback_data: "watch" },
+          { text: "🎧 Podcasts", callback_data: "podcast" },
+        ],
+        [{ text: "🏠 Menu", callback_data: "menu" }],
+      ],
+    });
+    return;
+  }
+
+  await telegram.sendMessage({ chatId, text: `Searching for *${escapeMarkdown(query)}*…` });
+  const results = await searchMedia(userId, query);
+
+  const article = results.articles.items[0];
+  const tracks = results.music.items.filter((t) => t.previewUrl).slice(0, 3);
+  const film = results.films.items[0];
+
+  if (!article && tracks.length === 0 && !film) {
+    await telegram.sendMessage({
+      chatId,
+      text: `Nothing found for *${escapeMarkdown(query)}*. Try the Spanish title.`,
+    });
+    return;
+  }
+
+  if (article) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        `📖 *${escapeMarkdown(article.title)}*` +
+        (article.description ? `\n_${escapeMarkdown(article.description)}_` : "") +
+        `\n\n${escapeMarkdown(truncate(article.extract, 700))}` +
+        `\n\n_Level ~${article.estimatedLevel} · ${article.wordCount} words · Wikipedia, CC BY-SA_`,
+      keyboard: [
+        [{ text: "📄 Read more", callback_data: `art:${article.title.slice(0, 50)}` }],
+        [{ text: "🔗 Open on Wikipedia", url: article.url }],
+      ],
+    });
+  }
+
+  if (film) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        `🎬 *${escapeMarkdown(film.title)}* ${film.releaseYear ?? ""}\n\n` +
+        escapeMarkdown(truncate(film.overview, 600)) +
+        "\n\n_Synopsis in Spanish · TMDB_",
+    });
+  }
+
+  // Tracks are listed with a link rather than played: a 30-second clip with no
+  // lyrics to follow is noise in a chat. Listening happens on the platform,
+  // and any line from it can come back here via /explain.
+  if (tracks.length > 0) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        "🎵 *Tracks*\n\n" +
+        tracks
+          .map((t) => `• ${escapeMarkdown(t.title)} — ${escapeMarkdown(t.artist)}`)
+          .join("\n") +
+        "\n\n_Listen on the platform, then send me any line with_ `/explain <line>` _for a full breakdown._",
+      keyboard: tracks
+        .slice(0, 3)
+        .map((t) => [{ text: `🔗 ${t.title.slice(0, 30)}`, url: t.externalUrl }]),
+    });
+  }
+
+  await recordMediaActivity({ userId, kind: "reading", minutes: 3, source: "telegram" });
+}
+
+async function sendWatchList(chatId: number, userId: string): Promise<void> {
+  const result = await browseFilms(userId, { animationOnly: true });
+
+  if (result.items.length === 0) {
+    const suggestions = result.suggestions.slice(0, 6);
+    await telegram.sendMessage({
+      chatId,
+      text:
+        "*Watch in Spanish*\n\n" +
+        (result.error ? `_${escapeMarkdown(result.error)}_\n\n` : "") +
+        suggestions
+          .map((s) => `🎬 *${escapeMarkdown(s.title)}* (${s.level}, ${escapeMarkdown(s.country)})\n   _${escapeMarkdown(s.why)}_`)
+          .join("\n\n"),
+      keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+    });
+    return;
+  }
+
+  await telegram.sendMessage({
+    chatId,
+    text:
+      "*Cartoons in Spanish*\n\n" +
+      "Animation is the easiest way in: dubbed dialogue is recorded clean and paced for children.\n\n" +
+      result.items
+        .slice(0, 5)
+        .map((f) => `🎬 *${escapeMarkdown(f.title)}* ${f.releaseYear ?? ""}\n_${escapeMarkdown(truncate(f.overview, 220))}_`)
+        .join("\n\n"),
+    keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+  });
+}
+
+async function sendPodcasts(chatId: number, userId: string): Promise<void> {
+  const result = await browsePodcasts(userId);
+
+  const shows = result.shows
+    .map((s) => `• *${escapeMarkdown(s.publisher)}* (${s.level}) — ${escapeMarkdown(s.description)}`)
+    .join("\n");
+
+  await telegram.sendMessage({
+    chatId,
+    text: `*Spanish podcasts*\n\n${shows}\n\n_Long-form listening is what turns "understands exercises" into "understands people"._`,
+  });
+
+  for (const episode of result.items.slice(0, 3)) {
+    if (!episode.audioUrl) continue;
+    await telegram.sendAudio({
+      chatId,
+      audioUrl: episode.audioUrl,
+      title: truncate(episode.title, 60),
+      performer: episode.publisher,
+      caption:
+        `🎧 *${escapeMarkdown(truncate(episode.title, 90))}*\n` +
+        `_${escapeMarkdown(episode.publisher)}${episode.durationSeconds ? ` · ${Math.round(episode.durationSeconds / 60)} min` : ""}_`,
+      keyboard: [[{ text: "🔗 Episode page", url: episode.pageUrl }]],
+    });
+  }
+
+  if (result.items.length > 0) {
+    await recordMediaActivity({ userId, kind: "listening", minutes: 5, source: "telegram" });
+  }
+}
+
+/** The fuller article text, when the learner asks for more. */
+async function sendArticle(chatId: number, userId: string, title: string): Promise<void> {
+  const article = await openArticle(userId, title);
+  if (!article) {
+    await telegram.sendMessage({ chatId, text: "Could not load that article." });
+    return;
+  }
+
+  await telegram.sendMessage({
+    chatId,
+    text:
+      `📖 *${escapeMarkdown(article.title)}*\n\n` +
+      escapeMarkdown(truncate(article.extract, 3200)) +
+      "\n\n_Wikipedia, CC BY-SA 4.0_",
+    keyboard: [[{ text: "🔗 Full article", url: article.url }]],
+  });
+
+  await recordMediaActivity({ userId, kind: "reading", minutes: 5, source: "telegram" });
+}
+
+/**
+ * Send pronunciation audio for a word or sentence.
+ *
+ * A real native recording is used where one exists and synthesis fills the
+ * gaps; the learner is told which they got, because "a speaker from Sinaloa
+ * said this" is more useful information than a generic clip.
+ */
+async function sendPronunciation(
+  chatId: number,
+  text: string,
+  options: { slow?: boolean; dialect?: "es-ES" | "es-419" } = {},
+): Promise<void> {
+  const clean = text.trim();
+
+  if (!clean) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        "Send `/say <word or sentence>` and I will pronounce it.\n\n" +
+        "For example: `/say perro` or `/say ¿Dónde está el baño?`",
+    });
+    return;
+  }
+
+  const audio = await getSpeech(clean, { slow: options.slow, dialect: options.dialect });
+
+  if (!audio) {
+    await telegram.sendMessage({
+      chatId,
+      text: synthesisAvailable()
+        ? `Could not produce audio for "${escapeMarkdown(clean)}".`
+        : "Pronunciation needs an AI provider for anything but single common words. Add GEMINI_API_KEY.",
+    });
+    return;
+  }
+
+  const caption =
+    `🔊 *${escapeMarkdown(truncate(clean, 200))}*` +
+    (audio.credit ? `\n_${escapeMarkdown(audio.credit)}_` : "") +
+    (audio.origin === "synthesis" ? "\n_Synthesised_" : "");
+
+  // Only synthesis can be slowed down; a recording is fixed.
+  const keyboard: InlineKeyboard = options.slow
+    ? []
+    : [[{ text: "🐢 Slower", callback_data: `say:${clean.slice(0, 55)}` }]];
+
+  await telegram.sendVoiceNote({
+    chatId,
+    audio: audio.data,
+    format: audio.format,
+    caption,
+    filename: `pronunciation.${audio.format}`,
+    keyboard: keyboard.length > 0 ? keyboard : undefined,
+  });
+}
+
+/**
+ * Break down one line of Spanish the learner pastes.
+ *
+ * The learner reads lyrics, subtitles or anything else wherever it is licensed,
+ * and brings a line here. Analysing supplied text needs no content licence,
+ * which is why this works where hosting the text never could — and the
+ * breakdown is the part with the teaching value anyway.
+ */
+async function sendExplanation(chatId: number, userId: string, line: string): Promise<void> {
+  const clean = line.trim();
+
+  if (!clean) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        "*Break down a line*\n\n" +
+        "Send `/explain <line>` with any Spanish you have run into — a lyric, a subtitle, " +
+        "a sign, a message.\n\n" +
+        "You get the translation, every word explained, the grammar, and what the " +
+        "dropped letters actually are.\n\n" +
+        "Try: `/explain Se me olvidó que to' pasa por algo`",
+    });
+    return;
+  }
+
+  if (clean.length > 400) {
+    await telegram.sendMessage({
+      chatId,
+      text: "One line at a time — send up to about 400 characters and I will go through it properly.",
+    });
+    return;
+  }
+
+  await telegram.sendMessage({ chatId, text: "🔍 Working through it…" });
+
+  const { explanation, message } = await explainSpanishLine(userId, clean);
+  if (!explanation) {
+    await telegram.sendMessage({ chatId, text: escapeMarkdown(message ?? "Could not analyse that.") });
+    return;
+  }
+
+  const lines = [
+    `🇪🇸 *${escapeMarkdown(explanation.original)}*`,
+    `🇬🇧 ${escapeMarkdown(explanation.translation)}`,
+  ];
+
+  if (explanation.literal) {
+    lines.push("", `_Literally: ${escapeMarkdown(explanation.literal)}_`);
+  }
+
+  if (explanation.words.length > 0) {
+    lines.push("", "*Word by word*");
+    for (const word of explanation.words.slice(0, 18)) {
+      // The standard spelling matters most: it is what turns an unrecognisable
+      // written form back into a word the learner already knows.
+      const standard = word.standardForm ? ` _(= ${escapeMarkdown(word.standardForm)})_` : "";
+      const note = word.note ? ` — ${escapeMarkdown(word.note)}` : "";
+      lines.push(`• *${escapeMarkdown(word.surface)}*${standard} — ${escapeMarkdown(word.meaning)}${note}`);
+    }
+  }
+
+  if (explanation.grammar.length > 0) {
+    lines.push("", "*Grammar*");
+    for (const point of explanation.grammar.slice(0, 4)) {
+      lines.push(`▸ *${escapeMarkdown(point.point)}* — ${escapeMarkdown(point.explanation)}`);
+    }
+  }
+
+  if (explanation.dialect) {
+    lines.push("", `*Dialect* — ${escapeMarkdown(explanation.dialect)}`);
+  }
+
+  if (explanation.estimatedLevel) {
+    lines.push("", `_This line is around ${explanation.estimatedLevel}._`);
+  }
+
+  await telegram.sendMessage({
+    chatId,
+    text: lines.join("\n"),
+    keyboard: [[{ text: "🔊 Hear the line", callback_data: `say:${clean.slice(0, 55)}` }]],
+  });
+}
+
 async function sendVocabulary(chatId: number, userId: string): Promise<void> {
   const [total, learning, mastered, due] = await Promise.all([
     prisma.vocabularyProgress.count({ where: { userId } }),
@@ -637,6 +1003,115 @@ async function sendStats(chatId: number, userId: string): Promise<void> {
 
 // ─── Callbacks ───────────────────────────────────────────────────────────────
 
+/**
+ * /remind — reminder times, in the learner's own words and timezone.
+ *
+ * Three a day by default, each with a different job: the morning one hands
+ * over the plan, the midday one *is* a review card, the evening one only
+ * pushes if the day is still empty. Arguments set custom hours directly
+ * (`/remind 8 13 21`); with none, the buttons cover the common shapes.
+ */
+async function sendReminderSettings(chatId: number, userId: string, args = ""): Promise<void> {
+  const requested = parseHourArgs(args);
+
+  const settings = requested
+    ? await updateReminderSettings(userId, { enabled: true, hours: requested })
+    : await getReminderSettings(userId);
+
+  const lines = requested ? ["✅ *Reminders updated*", ""] : ["🔔 *Study reminders*", ""];
+
+  if (settings.enabled) {
+    lines.push(`On — ${settings.description} (${settings.timezone})`, "");
+    lines.push("What each one does:");
+    lines.push("• *Morning* — today's plan, one tap to start");
+    lines.push("• *Midday* — a single word to recall, right in the chat");
+    lines.push("• *Evening* — only if the day is still empty, so your streak survives");
+  } else {
+    lines.push("Currently *off*. Nothing will be sent.");
+  }
+
+  lines.push("", "Set your own with `/remind 8 13 21`.");
+
+  const keyboard: InlineKeyboard = [
+    [
+      { text: "🌅 7 · 12 · 19", callback_data: "remset:early" },
+      { text: "☀️ 9 · 13 · 20", callback_data: "remset:standard" },
+    ],
+    [
+      { text: "🌆 10 · 15 · 22", callback_data: "remset:late" },
+      { text: "🌙 12 · 18 · 23", callback_data: "remset:owl" },
+    ],
+    settings.enabled
+      ? [
+          { text: "📨 Send one now", callback_data: "remtest" },
+          { text: "🔕 Turn off", callback_data: "remoff" },
+        ]
+      : [{ text: "🔔 Turn on", callback_data: "remon" }],
+    [{ text: "🏠 Menu", callback_data: "menu" }],
+  ];
+
+  await telegram.sendMessage({ chatId, text: lines.join("\n"), keyboard });
+}
+
+const REMINDER_PRESETS: Record<string, number[]> = {
+  early: [7, 12, 19],
+  standard: [9, 13, 20],
+  late: [10, 15, 22],
+  owl: [12, 18, 23],
+};
+
+async function applyReminderPreset(chatId: number, userId: string, preset: string): Promise<void> {
+  const hours = REMINDER_PRESETS[preset];
+  if (!hours) return;
+
+  const settings = await updateReminderSettings(userId, { enabled: true, hours });
+  await telegram.sendMessage({
+    chatId,
+    text: `✅ Reminders set to *${settings.description}* (${settings.timezone}).`,
+    keyboard: [
+      [{ text: "📨 Send one now", callback_data: "remtest" }],
+      [{ text: "🏠 Menu", callback_data: "menu" }],
+    ],
+  });
+}
+
+async function toggleReminders(chatId: number, userId: string, enabled: boolean): Promise<void> {
+  const settings = await updateReminderSettings(userId, { enabled });
+  await telegram.sendMessage({
+    chatId,
+    text: enabled
+      ? `🔔 Reminders on — ${escapeMarkdown(settings.description)}.`
+      : "🔕 Reminders off. Turn them back on any time with /remind.",
+    keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+  });
+}
+
+/** Deliver the next reminder immediately, so it can be seen before trusting it. */
+async function sendReminderPreview(chatId: number, userId: string): Promise<void> {
+  const sent = await sendTestReminder(userId, "kickoff");
+  if (!sent) {
+    await telegram.sendMessage({
+      chatId,
+      text: "Could not send a sample reminder just now — try again in a moment.",
+    });
+  }
+}
+
+/** "8 13 21" or "8,13,21" → [8, 13, 21]; anything else → null. */
+function parseHourArgs(args: string): number[] | null {
+  const trimmed = args.trim();
+  if (!trimmed) return null;
+  if (!/^[\d\s,:]+$/.test(trimmed)) return null;
+
+  // "9:00" is a natural thing to type; only the hour is significant.
+  const hours = trimmed
+    .split(/[\s,]+/)
+    .map((part) => Number.parseInt(part.split(":")[0] ?? "", 10))
+    .filter((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23);
+
+  return hours.length > 0 ? parseReminderHours(hours.join(",")) : null;
+}
+
 async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {
   const chatId = query.message?.chat.id;
   if (!chatId || !query.data) return;
@@ -659,6 +1134,8 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
       return sendPractice(chatId, user.id);
     case "speak":
       return sendScenarioPicker(chatId);
+    case "media":
+      return sendMedia(chatId, user.id, "");
     case "progress":
       return sendProgress(chatId, user.id);
     case "noop":
@@ -691,6 +1168,14 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
     case "hook":
       return sendWordHook(chatId, user.id, args[0]!);
 
+    case "hear": {
+      const word = await prisma.vocabularyWord.findUnique({ where: { id: args[0]! } });
+      if (!word) return;
+      return sendPronunciation(chatId, word.spanish.replace(/^(el|la|los|las)\s+/, ""), {
+        dialect: user.dialectPreference as "es-ES" | "es-419",
+      });
+    }
+
     case "ghook":
       return sendGrammarHook(chatId, user.id, args[0]!);
 
@@ -699,6 +1184,38 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
 
     case "rate":
       return rateHook(chatId, user.id, args[0]!, args[1] === "1");
+
+    case "watch":
+      return sendWatchList(chatId, user.id);
+
+    case "podcast":
+      return sendPodcasts(chatId, user.id);
+
+    case "say":
+      // Rejoined because the text may itself contain ":".
+      return sendPronunciation(chatId, args.join(":"), {
+        slow: true,
+        dialect: user.dialectPreference as "es-ES" | "es-419",
+      });
+
+    case "art":
+      // Titles can contain ":", which is also the callback separator.
+      return sendArticle(chatId, user.id, args.join(":"));
+
+    case "rem":
+      return sendReminderSettings(chatId, user.id);
+
+    case "remset":
+      return applyReminderPreset(chatId, user.id, args[0]!);
+
+    case "remoff":
+      return toggleReminders(chatId, user.id, false);
+
+    case "remon":
+      return toggleReminders(chatId, user.id, true);
+
+    case "remtest":
+      return sendReminderPreview(chatId, user.id);
 
     default:
       return;
@@ -726,7 +1243,10 @@ async function revealAnswer(chatId: number, wordId: string): Promise<void> {
       ],
       // Offered only here, on the revealed card — never on the prompt, where
       // it would replace the recall attempt that does the actual work.
-      [{ text: "💡 Memory hook", callback_data: `hook:${wordId}` }],
+      [
+        { text: "💡 Memory hook", callback_data: `hook:${wordId}` },
+        { text: "🔊 Hear it", callback_data: `hear:${wordId}` },
+      ],
     ],
   });
 }

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { formatReminderHours, parseReminderHours } from "@lingoza/engine";
 import { generateLinkCode, hashPassword, signToken, verifyPassword } from "../../auth.js";
 import { prisma } from "../../db.js";
 import { ensureProgress } from "../../services/progress.js";
@@ -104,6 +105,7 @@ authRoutes.get("/me", async (c) => {
     timezone: full.timezone,
     telegramLinked: Boolean(full.telegramId),
     remindersEnabled: full.remindersEnabled,
+    reminderHours: parseReminderHours(full.reminderHours),
     level: full.progress?.currentLevelCode ?? "A1",
     needsPlacement: !placement,
   });
@@ -117,7 +119,7 @@ authRoutes.patch("/me", async (c) => {
     dailyTimeBudget?: number;
     timezone?: string;
     remindersEnabled?: boolean;
-    reminderHour?: number;
+    reminderHours?: number[];
     currentLevelCode?: string;
   }>();
 
@@ -135,8 +137,11 @@ authRoutes.patch("/me", async (c) => {
       ...(typeof body.remindersEnabled === "boolean"
         ? { remindersEnabled: body.remindersEnabled }
         : {}),
-      ...(typeof body.reminderHour === "number"
-        ? { reminderHour: Math.max(0, Math.min(23, body.reminderHour)) }
+      ...(Array.isArray(body.reminderHours) && body.reminderHours.length > 0
+        ? {
+            reminderHours: formatReminderHours(body.reminderHours),
+            reminderHour: parseReminderHours(body.reminderHours.join(","))[0] ?? 9,
+          }
         : {}),
     },
   });

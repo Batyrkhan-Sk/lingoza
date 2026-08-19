@@ -10,7 +10,8 @@
     "build": "tsc -b",
     "start": "node dist/main.js",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
-    "telegram:register": "tsx src/telegram/register.ts"
+    "telegram:register": "tsx src/telegram/register.ts",
+    "reminders:run": "tsx src/telegram/send-reminders.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

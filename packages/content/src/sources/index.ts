@@ -6,6 +6,13 @@ import type { SourcedArticle, SourcedSentence, SourceResult } from "./types.js";
 export * from "./types.js";
 export { TatoebaSource, type TatoebaQuery } from "./tatoeba.js";
 export { SpanishPressSource, parseRss, estimateLevel, type PressQuery } from "./press.js";
+export { WikipediaSource, type WikipediaQuery } from "./wikipedia.js";
+export { DeezerSource, SUGGESTED_ARTISTS, type MusicQuery } from "./deezer.js";
+export { TmdbSource, SUGGESTED_WATCHING, type FilmQuery } from "./tmdb.js";
+export { GutenbergSource, type BookQuery } from "./gutenberg.js";
+export { PodcastSource, type PodcastQuery, type PodcastShow } from "./podcasts.js";
+export { MediaSources, type MediaOptions } from "./media.js";
+export { PronunciationSource, type NativeRecording } from "./pronunciation.js";
 
 /**
  * The sourcing facade.
