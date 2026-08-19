@@ -8,7 +8,7 @@ One learning engine drives three interfaces: a web app, a Telegram bot, and any 
 
 ## Deploy
 
-Link to bot: [https://t.me/@lingoza_bot](https://t.me/@lingoza_bot)
+Link to bot: [https://t.me/@lingoza_bot](https://t.me/lingoza_bot)
 
 ## Quick start
 
