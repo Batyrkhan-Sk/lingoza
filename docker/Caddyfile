@@ -1,0 +1,42 @@
+# Caddy obtains and renews a Let's Encrypt certificate for {$DOMAIN}
+# automatically, which is what makes the Telegram webhook possible — Telegram
+# refuses to deliver to anything without a valid public certificate.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# The Telegram webhook is authenticated by its secret header, not by a
+	# bearer token, so it is matched explicitly and passed straight through.
+	handle /api/telegram/* {
+		reverse_proxy api:4000
+	}
+
+	handle /api/* {
+		reverse_proxy api:4000
+	}
+
+	# Everything else is the SPA, served by the same container.
+	handle {
+		reverse_proxy api:4000
+	}
+
+	# Long-lived caching for fingerprinted assets; never for index.html, or
+	# users get a stale shell pointing at deleted bundles after a deploy.
+	@immutable path /assets/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

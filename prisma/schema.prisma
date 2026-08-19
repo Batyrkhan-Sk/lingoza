@@ -1,0 +1,1261 @@
+// Lingoza — Spanish learning ecosystem
+//
+// One database, one learning system. The web app, the Telegram bot and any
+// future mobile client all read and write these same tables through the API,
+// so a lesson started in the browser can be finished in Telegram.
+//
+// Runs on PostgreSQL in every environment — local development uses the
+// Postgres container from docker-compose.yml, so what you develop against is
+// what production runs. Models avoid enums, scalar lists and Json columns and
+// use real foreign keys throughout (spec §21).
+
+generator client {
+  provider = "prisma-client-js"
+  // Both engines are bundled so the same image builds on either Oracle shape:
+  // Ampere A1 is arm64, the E-series AMD shapes are x86_64. "native" covers
+  // local development on whatever the developer's machine happens to be.
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String  @id @default(cuid())
+  email        String? @unique
+  passwordHash String?
+  displayName  String
+  nativeLanguage String @default("en")
+
+  /// Interface the account was created from: "web" | "telegram" | "mobile"
+  createdVia String @default("web")
+
+  /// Telegram identity — set once the account is linked to the bot. The same
+  /// user row backs both interfaces, which is what makes progress sync work.
+  telegramId       String? @unique
+  telegramUsername String?
+  telegramChatId   String?
+  /// One-time code used to link a Telegram chat to an existing web account.
+  linkCode        String?   @unique
+  linkCodeExpires DateTime?
+
+  /// Preferred Spanish variety for content and audio: "es-ES" | "es-419"
+  dialectPreference String @default("es-ES")
+  /// Minutes/day the learner committed to: 10 | 20 | 30 | 45 | 60
+  dailyTimeBudget Int @default(20)
+  timezone        String @default("UTC")
+
+  remindersEnabled  Boolean @default(true)
+  reminderHour      Int     @default(19)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastActiveAt DateTime @default(now())
+
+  progress           UserProgress?
+  lessonProgress     LessonProgress[]
+  vocabularyProgress VocabularyProgress[]
+  grammarProgress    GrammarProgress[]
+  quizResults        QuizResult[]
+  questionAttempts   QuestionAttempt[]
+  speakingAttempts   SpeakingAttempt[]
+  writingAttempts    WritingAttempt[]
+  conversations      Conversation[]
+  achievements       UserAchievement[]
+  dailyGoals         DailyGoal[]
+  dailySessions      DailySession[]
+  placementResults   PlacementResult[]
+  mistakePatterns    MistakePattern[]
+  studySessions      StudySession[]
+  notifications      Notification[]
+  mnemonics          Mnemonic[]
+  mnemonicRatings    MnemonicRating[]
+
+  @@index([telegramId])
+}
+
+/// Aggregate, always-current snapshot of where a learner stands. Written by the
+/// engine after every scored activity so dashboards never have to recompute.
+model UserProgress {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Current working CEFR level code: A1 | A2 | B1 | B2 | C1 | C2
+  currentLevelCode String @default("A1")
+  /// Level the placement test estimated, kept for comparison over time.
+  placementLevelCode String?
+
+  /// Per-skill mastery, 0–100.
+  listeningScore Float @default(0)
+  speakingScore  Float @default(0)
+  readingScore   Float @default(0)
+  writingScore   Float @default(0)
+  grammarScore   Float @default(0)
+  vocabularyScore Float @default(0)
+
+  /// Overall course completion 0–100 across the current level.
+  overallProgress Float @default(0)
+
+  lessonsCompleted   Int @default(0)
+  wordsLearned       Int @default(0)
+  wordsMastered      Int @default(0)
+  grammarMastered    Int @default(0)
+  totalStudyMinutes  Int @default(0)
+
+  xp             Int @default(0)
+  /// Gamification level derived from XP (not a CEFR level).
+  playerLevel    Int @default(1)
+  currentStreak  Int @default(0)
+  longestStreak  Int @default(0)
+  lastStudyDate  DateTime?
+
+  /// Where to resume — set whenever a lesson session is left unfinished, and
+  /// read by every interface so "Continue learning" means the same thing in
+  /// the web app and in Telegram.
+  resumeLessonId String?
+
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Curriculum: Level → Course → Module → Lesson
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Level {
+  id          String @id @default(cuid())
+  /// A1 | A2 | B1 | B2 | C1 | C2
+  code        String @unique
+  name        String
+  description String
+  /// What a learner can do at the end of this level (CEFR "can-do" statement).
+  canDo       String
+  orderIndex  Int
+  courses     Course[]
+}
+
+model Course {
+  id          String @id @default(cuid())
+  slug        String @unique
+  title       String
+  description String
+  orderIndex  Int
+
+  levelId String
+  level   Level  @relation(fields: [levelId], references: [id], onDelete: Cascade)
+
+  modules Module[]
+
+  @@index([levelId])
+}
+
+model Module {
+  id          String @id @default(cuid())
+  slug        String @unique
+  title       String
+  description String
+  /// Short thematic label shown on cards, e.g. "Pronunciation", "Past tenses".
+  theme       String
+  orderIndex  Int
+  /// Icon key resolved by the client's icon map.
+  icon        String @default("BookOpen")
+
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  lessons Lesson[]
+
+  @@index([courseId])
+}
+
+model Lesson {
+  id          String @id @default(cuid())
+  slug        String @unique
+  title       String
+  /// One-line statement of what the learner will be able to do afterwards.
+  objective   String
+  orderIndex  Int
+  estimatedMinutes Int @default(12)
+
+  /// Section 1 of the lesson structure — markdown, written at the register of
+  /// the level it belongs to (plain at A1, sophisticated at C1/C2).
+  explanation String
+  /// Section 9 — the takeaway recap shown at the end.
+  review      String
+  /// Optional culture/regional-usage note woven into the lesson (spec §14).
+  culturalNote String?
+
+  moduleId String
+  module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  /// Lessons this one builds on. Enforces real pedagogical progression (§23):
+  /// nothing unlocks until its prerequisites are complete.
+  prerequisites LessonPrerequisite[] @relation("LessonToPrereq")
+  requiredBy    LessonPrerequisite[] @relation("PrereqToLesson")
+
+  examples   LessonExample[]
+  vocabulary LessonVocabulary[]
+  grammar    LessonGrammar[]
+  exercises  Exercise[]
+  listening  ListeningExercise[]
+  reading    ReadingText[]
+  speaking   SpeakingPrompt[]
+  writing    WritingPrompt[]
+  progress   LessonProgress[]
+  quizResults QuizResult[]
+  dailyItems DailySessionItem[]
+
+  @@index([moduleId])
+}
+
+model LessonPrerequisite {
+  id String @id @default(cuid())
+
+  lessonId String
+  lesson   Lesson @relation("LessonToPrereq", fields: [lessonId], references: [id], onDelete: Cascade)
+
+  prerequisiteId String
+  prerequisite   Lesson @relation("PrereqToLesson", fields: [prerequisiteId], references: [id], onDelete: Cascade)
+
+  @@unique([lessonId, prerequisiteId])
+}
+
+/// Section 2 — worked examples with the reason each form is used.
+model LessonExample {
+  id         String @id @default(cuid())
+  spanish    String
+  english    String
+  /// Why this form is used here — the "why", not just the translation.
+  note       String?
+  orderIndex Int
+
+  lessonId String
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@index([lessonId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vocabulary
+// ─────────────────────────────────────────────────────────────────────────────
+
+model VocabularyWord {
+  id          String @id @default(cuid())
+  spanish     String
+  english     String
+  /// IPA or learner-friendly respelling.
+  pronunciation String
+  /// Path/URL to the audio clip; the client falls back to speech synthesis.
+  audioUrl    String?
+  exampleSentence String
+  exampleTranslation String
+
+  /// 1 (easiest) – 5 (hardest), used to seed the SRS interval.
+  difficulty Int    @default(2)
+  /// A1 | A2 | B1 | B2 | C1 | C2
+  levelCode  String
+  /// Thematic topic, e.g. "food", "travel", "work".
+  topic      String
+  /// Part of speech: noun | verb | adjective | adverb | phrase | ...
+  partOfSpeech String
+  /// "m" | "f" | "mf" | null for words without grammatical gender.
+  gender     String?
+  pluralForm String?
+  /// Rank in frequency lists — lower is more frequent. Drives ordering so
+  /// high-frequency vocabulary is always taught first (§23).
+  frequencyRank Int?
+
+  /// Regional marker: "es-ES" | "es-419" | null when universal.
+  region     String?
+  /// The equivalent used in the other region, e.g. coche ↔ carro.
+  regionalVariant String?
+
+  relationsFrom WordRelation[] @relation("RelationSource")
+  relationsTo   WordRelation[] @relation("RelationTarget")
+  lessons       LessonVocabulary[]
+  progress      VocabularyProgress[]
+  dailyItems    DailySessionItem[]
+  mnemonics     Mnemonic[]
+
+  @@unique([spanish, levelCode])
+  @@index([levelCode, topic])
+  @@index([frequencyRank])
+}
+
+/// Related words / synonyms / antonyms as real edges rather than a text blob.
+model WordRelation {
+  id String @id @default(cuid())
+  /// "synonym" | "antonym" | "related"
+  kind String
+
+  sourceId String
+  source   VocabularyWord @relation("RelationSource", fields: [sourceId], references: [id], onDelete: Cascade)
+
+  targetId String
+  target   VocabularyWord @relation("RelationTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, targetId, kind])
+}
+
+model LessonVocabulary {
+  id         String @id @default(cuid())
+  orderIndex Int    @default(0)
+
+  lessonId String
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  wordId String
+  word   VocabularyWord @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@unique([lessonId, wordId])
+}
+
+/// One row per learner per word — the spaced-repetition state (SM-2 derived).
+model VocabularyProgress {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  wordId String
+  word   VocabularyWord @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  /// 0–1 estimate of how well the word is known.
+  strength      Float @default(0)
+  /// SM-2 ease factor, clamped to [1.3, 2.8].
+  easeFactor    Float @default(2.5)
+  /// Current interval in days.
+  intervalDays  Float @default(0)
+  repetitions   Int   @default(0)
+  lapses        Int   @default(0)
+
+  timesSeen     Int @default(0)
+  timesCorrect  Int @default(0)
+
+  /// "new" | "learning" | "review" | "mastered"
+  status        String @default("new")
+
+  lastReviewedAt DateTime?
+  dueAt          DateTime @default(now())
+  firstSeenAt    DateTime @default(now())
+
+  @@unique([userId, wordId])
+  @@index([userId, dueAt])
+  @@index([userId, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Grammar
+// ─────────────────────────────────────────────────────────────────────────────
+
+model GrammarTopic {
+  id    String @id @default(cuid())
+  slug  String @unique
+  title String
+  /// A1 | A2 | B1 | B2 | C1 | C2
+  levelCode String
+  orderIndex Int
+  /// Grouping such as "verbs", "pronouns", "syntax".
+  category String
+
+  /// Plain-language explanation, pitched at the level.
+  explanation String
+  /// When the structure is used, in prose.
+  whenToUse   String
+  /// The pattern itself, e.g. "haber (presente) + participio".
+  formula     String
+
+  examples GrammarExample[]
+  mistakes CommonMistake[]
+  lessons  LessonGrammar[]
+  progress GrammarProgress[]
+  exercises Exercise[]
+  dailyItems DailySessionItem[]
+  mnemonics Mnemonic[]
+
+  /// Explicit "X vs Y" contrasts (ser vs estar, por vs para …), from both sides.
+  contrastsA GrammarContrast[] @relation("ContrastA")
+  contrastsB GrammarContrast[] @relation("ContrastB")
+
+  @@index([levelCode])
+}
+
+model GrammarExample {
+  id         String @id @default(cuid())
+  spanish    String
+  english    String
+  note       String?
+  /// true when the example is drawn from everyday real-world use rather than
+  /// constructed for the grammar point.
+  realWorld  Boolean @default(false)
+  orderIndex Int
+
+  topicId String
+  topic   GrammarTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@index([topicId])
+}
+
+/// The mistakes learners actually make with this structure, with the fix.
+model CommonMistake {
+  id          String @id @default(cuid())
+  wrong       String
+  right       String
+  explanation String
+  orderIndex  Int
+
+  topicId String
+  topic   GrammarTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@index([topicId])
+}
+
+/// A head-to-head comparison between two easily-confused structures (§5).
+model GrammarContrast {
+  id      String @id @default(cuid())
+  slug    String @unique
+  title   String
+  /// The one-sentence rule of thumb that resolves the confusion.
+  summary String
+  /// Longer discussion of the distinction.
+  detail  String
+
+  topicAId String
+  topicA   GrammarTopic @relation("ContrastA", fields: [topicAId], references: [id], onDelete: Cascade)
+  labelA   String
+
+  topicBId String
+  topicB   GrammarTopic @relation("ContrastB", fields: [topicBId], references: [id], onDelete: Cascade)
+  labelB   String
+
+  rows ContrastRow[]
+}
+
+model ContrastRow {
+  id         String @id @default(cuid())
+  /// The dimension being compared, e.g. "Permanent vs temporary".
+  dimension  String
+  sideA      String
+  sideB      String
+  exampleA   String
+  exampleB   String
+  orderIndex Int
+
+  contrastId String
+  contrast   GrammarContrast @relation(fields: [contrastId], references: [id], onDelete: Cascade)
+
+  @@index([contrastId])
+}
+
+model LessonGrammar {
+  id         String @id @default(cuid())
+  orderIndex Int    @default(0)
+
+  lessonId String
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  topicId String
+  topic   GrammarTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([lessonId, topicId])
+}
+
+model GrammarProgress {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  topicId String
+  topic   GrammarTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  /// 0–100 mastery of this structure.
+  mastery      Float @default(0)
+  timesSeen    Int   @default(0)
+  timesCorrect Int   @default(0)
+  /// "not_started" | "learning" | "practised" | "mastered"
+  status       String @default("not_started")
+  lastPractisedAt DateTime?
+
+  @@unique([userId, topicId])
+  @@index([userId, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exercises & questions
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Exercise {
+  id    String @id @default(cuid())
+  title String
+  /// multiple_choice | fill_blank | translate | word_order | match |
+  /// listening | reading | dictation | speaking | writing | conversation
+  kind  String
+  /// Instruction shown above the questions.
+  prompt String
+  orderIndex Int @default(0)
+  /// Which lesson section this belongs to: "practice" | "test" | "review"
+  section String @default("practice")
+
+  lessonId String?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  /// Set when the exercise drills a specific structure, so the adaptivity
+  /// engine can prescribe more of exactly what the learner is failing.
+  grammarTopicId String?
+  grammarTopic   GrammarTopic? @relation(fields: [grammarTopicId], references: [id], onDelete: SetNull)
+
+  listeningId String?
+  listening   ListeningExercise? @relation(fields: [listeningId], references: [id], onDelete: Cascade)
+
+  readingId String?
+  reading   ReadingText? @relation(fields: [readingId], references: [id], onDelete: Cascade)
+
+  questions Question[]
+  results   QuizResult[]
+
+  @@index([lessonId])
+  @@index([grammarTopicId])
+}
+
+model Question {
+  id     String @id @default(cuid())
+  /// multiple_choice | fill_blank | translate | word_order | true_false | short_answer
+  kind   String
+  /// The question itself (may contain a ___ blank).
+  prompt String
+  /// Extra context shown in smaller type, e.g. the full sentence.
+  context String?
+  /// Canonical correct answer. Free-text answers are matched leniently
+  /// (case/accent/punctuation-insensitive) by the engine.
+  correctAnswer String
+  /// Alternative answers that are also accepted, newline-separated.
+  acceptedAnswers String?
+  /// Shown after answering — always explains *why*, never just right/wrong.
+  explanation String
+  /// Optional hint the learner can reveal at an XP cost.
+  hint       String?
+  points     Int @default(10)
+  orderIndex Int
+
+  exerciseId String
+  exercise   Exercise @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+
+  options  AnswerOption[]
+  attempts QuestionAttempt[]
+
+  @@index([exerciseId])
+}
+
+model AnswerOption {
+  id         String  @id @default(cuid())
+  text       String
+  isCorrect  Boolean @default(false)
+  /// Why this distractor is wrong — shown when the learner picks it.
+  feedback   String?
+  orderIndex Int
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Listening & reading
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ListeningExercise {
+  id    String @id @default(cuid())
+  slug  String @unique
+  title String
+  levelCode String
+  /// conversation | interview | news | podcast | announcement | monologue
+  format String
+  /// Playback rate the audio was authored at: "slow" | "normal" | "native"
+  speed  String @default("normal")
+  /// Accent label, e.g. "Madrid", "Ciudad de México", "Buenos Aires".
+  accent String @default("Neutral")
+  region String @default("es-ES")
+  audioUrl String?
+  durationSeconds Int @default(0)
+  /// Short setup so the learner knows what they are about to hear.
+  intro String?
+
+  lessonId String?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+
+  segments  ListeningSegment[]
+  exercises Exercise[]
+
+  @@index([levelCode])
+}
+
+/// Sentence-level transcript rows. Storing the transcript segmented (rather
+/// than as one blob) is what makes "replay this sentence" and per-line
+/// hide/show possible.
+model ListeningSegment {
+  id          String @id @default(cuid())
+  orderIndex  Int
+  speaker     String?
+  spanish     String
+  english     String
+  startSeconds Float @default(0)
+  endSeconds   Float @default(0)
+
+  listeningId String
+  listening   ListeningExercise @relation(fields: [listeningId], references: [id], onDelete: Cascade)
+
+  @@index([listeningId])
+}
+
+model ReadingText {
+  id    String @id @default(cuid())
+  slug  String @unique
+  title String
+  levelCode String
+  /// dialogue | story | article | interview | essay | literature | opinion | academic
+  genre String
+  /// The text itself, in paragraphs separated by blank lines.
+  body  String
+  translation String?
+  source String?
+  wordCount Int @default(0)
+  estimatedMinutes Int @default(4)
+  /// Short cultural framing for the piece.
+  intro String?
+
+  lessonId String?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+
+  glossary  ReadingGlossaryEntry[]
+  exercises Exercise[]
+
+  @@index([levelCode])
+}
+
+/// Pre-authored word explanations for click-to-translate. Anything not found
+/// here is resolved live against the vocabulary table, then the AI provider.
+model ReadingGlossaryEntry {
+  id       String @id @default(cuid())
+  term     String
+  meaning  String
+  note     String?
+
+  readingId String
+  reading   ReadingText @relation(fields: [readingId], references: [id], onDelete: Cascade)
+
+  @@index([readingId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Productive skills: speaking & writing
+// ─────────────────────────────────────────────────────────────────────────────
+
+model SpeakingPrompt {
+  id    String @id @default(cuid())
+  slug  String @unique
+  title String
+  levelCode String
+  /// What the learner should say.
+  instruction String
+  /// The Spanish they are asked to produce or respond to.
+  targetText  String?
+  /// Sounds this drill focuses on, e.g. "rr", "j", "ñ".
+  focusSounds String?
+  /// repeat | respond | describe | roleplay | freeform
+  mode String @default("respond")
+
+  lessonId String?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+
+  attempts SpeakingAttempt[]
+
+  @@index([levelCode])
+}
+
+model SpeakingAttempt {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  promptId String?
+  prompt   SpeakingPrompt? @relation(fields: [promptId], references: [id], onDelete: SetNull)
+
+  /// What the recogniser heard.
+  transcript String
+  audioUrl   String?
+  durationSeconds Float @default(0)
+
+  /// All 0–100.
+  pronunciationScore Float
+  vocabularyScore    Float
+  grammarScore       Float
+  fluencyScore       Float
+  structureScore     Float
+  overallScore       Float
+
+  /// Narrative feedback shown to the learner.
+  feedback String
+  /// Which AI provider produced the evaluation: "gemini" | "groq" | "rules"
+  evaluatedBy String @default("rules")
+
+  corrections Correction[]
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model WritingPrompt {
+  id    String @id @default(cuid())
+  slug  String @unique
+  title String
+  levelCode String
+  instruction String
+  minWords Int @default(40)
+  maxWords Int @default(150)
+  /// Structures the learner is expected to use, newline-separated.
+  targetStructures String?
+
+  lessonId String?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+
+  attempts WritingAttempt[]
+
+  @@index([levelCode])
+}
+
+model WritingAttempt {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  promptId String?
+  prompt   WritingPrompt? @relation(fields: [promptId], references: [id], onDelete: SetNull)
+
+  text      String
+  wordCount Int @default(0)
+
+  grammarScore     Float
+  vocabularyScore  Float
+  structureScore   Float
+  coherenceScore   Float
+  naturalnessScore Float
+  spellingScore    Float
+  overallScore     Float
+
+  /// The learner's text rewritten as a native would put it.
+  improvedVersion String?
+  feedback        String
+  evaluatedBy     String @default("rules")
+
+  corrections Correction[]
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// A single correction produced by an evaluation. Shared by speaking and
+/// writing so the mistake tracker has one place to read from.
+model Correction {
+  id          String @id @default(cuid())
+  original    String
+  corrected   String
+  explanation String
+  /// grammar | vocabulary | spelling | pronunciation | structure | register
+  category    String
+  /// "minor" | "important" | "critical"
+  severity    String @default("important")
+
+  speakingAttemptId String?
+  speakingAttempt   SpeakingAttempt? @relation(fields: [speakingAttemptId], references: [id], onDelete: Cascade)
+
+  writingAttemptId String?
+  writingAttempt   WritingAttempt? @relation(fields: [writingAttemptId], references: [id], onDelete: Cascade)
+
+  messageId String?
+  message   ConversationMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI tutor conversations
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Conversation {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// casual | travel | restaurant | job_interview | university | shopping |
+  /// dating | meeting_people | business | debate | free
+  scenario  String
+  title     String
+  levelCode String
+  /// "web" | "telegram" | "mobile" — where it was started; conversations are
+  /// resumable from any interface.
+  origin    String @default("web")
+  isActive  Boolean @default(true)
+
+  messages  ConversationMessage[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+model ConversationMessage {
+  id String @id @default(cuid())
+
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  /// "user" | "tutor"
+  role    String
+  content String
+  /// English gloss of a tutor turn, revealed on demand.
+  translation String?
+  /// Set when the learner spoke rather than typed.
+  audioUrl String?
+  /// Coaching attached to this turn — delivered *after* the learner finishes
+  /// their thought rather than interrupting mid-conversation (§8).
+  coaching String?
+
+  corrections Correction[]
+  createdAt   DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+/// Rolled-up record of the errors a learner keeps making. Read by the daily
+/// session generator and the AI tutor so practice targets real weaknesses.
+model MistakePattern {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Stable key such as "ser_vs_estar", "preterite_endings", "gender_agreement".
+  patternKey String
+  /// grammar | vocabulary | spelling | pronunciation | structure | register
+  category   String
+  label      String
+  /// A representative example of the learner getting it wrong.
+  exampleWrong String?
+  exampleRight String?
+
+  occurrences Int @default(1)
+  /// Falls as the learner stops making the mistake; the pattern is retired at 0.
+  severity    Float @default(1)
+
+  grammarTopicId String?
+
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@unique([userId, patternKey])
+  @@index([userId, severity])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Progress, results & scheduling
+// ─────────────────────────────────────────────────────────────────────────────
+
+model LessonProgress {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  lessonId String
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  /// "not_started" | "in_progress" | "completed"
+  status String @default("not_started")
+  /// Which of the nine lesson sections the learner is on, so a lesson started
+  /// on the web resumes at the same place in Telegram.
+  currentSection String @default("explanation")
+  /// Sections finished so far, comma-separated in lesson order.
+  completedSections String @default("")
+
+  score        Float @default(0)
+  attempts     Int   @default(0)
+  studyMinutes Int   @default(0)
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  lastSeenAt  DateTime  @default(now())
+
+  @@unique([userId, lessonId])
+  @@index([userId, status])
+}
+
+model QuizResult {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  exerciseId String?
+  exercise   Exercise? @relation(fields: [exerciseId], references: [id], onDelete: SetNull)
+
+  lessonId String?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+
+  score          Float
+  correctCount   Int
+  questionCount  Int
+  durationSeconds Int @default(0)
+  xpEarned       Int @default(0)
+  /// "web" | "telegram" | "mobile"
+  source         String @default("web")
+
+  attempts  QuestionAttempt[]
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model QuestionAttempt {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  quizResultId String?
+  quizResult   QuizResult? @relation(fields: [quizResultId], references: [id], onDelete: Cascade)
+
+  givenAnswer String
+  isCorrect   Boolean
+  timeSeconds Int @default(0)
+  usedHint    Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, questionId])
+}
+
+/// A generated daily study plan (§13), sized to the learner's time budget.
+model DailySession {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Local calendar date, stored as YYYY-MM-DD so "today" is unambiguous
+  /// regardless of which interface generated it.
+  date String
+
+  targetMinutes Int
+  /// "pending" | "in_progress" | "completed"
+  status        String @default("pending")
+  completedItems Int @default(0)
+  totalItems     Int @default(0)
+  xpEarned       Int @default(0)
+
+  items DailySessionItem[]
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+model DailySessionItem {
+  id String @id @default(cuid())
+
+  sessionId String
+  session   DailySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  /// vocabulary | grammar | exercise | listening | speaking | conversation | review | lesson
+  kind       String
+  title      String
+  /// Why this item is in today's plan, e.g. "12 words due", "weak: preterite".
+  rationale  String
+  minutes    Int @default(3)
+  orderIndex Int
+  completed  Boolean @default(false)
+
+  lessonId String?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+
+  grammarTopicId String?
+  grammarTopic   GrammarTopic? @relation(fields: [grammarTopicId], references: [id], onDelete: SetNull)
+
+  wordId String?
+  word   VocabularyWord? @relation(fields: [wordId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId])
+}
+
+model DailyGoal {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date          String
+  targetMinutes Int
+  targetXp      Int @default(50)
+  minutesDone   Int @default(0)
+  xpEarned      Int @default(0)
+  achieved      Boolean @default(false)
+
+  @@unique([userId, date])
+}
+
+/// Raw time-on-task records; totals roll up into UserProgress.
+model StudySession {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// lesson | vocabulary | listening | reading | writing | speaking | tutor | practice
+  activity String
+  minutes  Int
+  source   String @default("web")
+
+  startedAt DateTime @default(now())
+
+  @@index([userId, startedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gamification & notifications
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Achievement {
+  id          String @id @default(cuid())
+  slug        String @unique
+  title       String
+  description String
+  icon        String @default("Award")
+  xpReward    Int    @default(50)
+  /// streak | vocabulary | lessons | skill | milestone
+  category    String
+  /// Machine-checkable rule, e.g. "streak>=7", "words_mastered>=100".
+  condition   String
+
+  users UserAchievement[]
+}
+
+model UserAchievement {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  unlockedAt DateTime @default(now())
+
+  @@unique([userId, achievementId])
+}
+
+model Notification {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// reminder | achievement | streak | report | lesson_ready
+  kind    String
+  title   String
+  body    String
+  /// "web" | "telegram" | "push"
+  channel String  @default("telegram")
+  sent    Boolean @default(false)
+  readAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Placement test
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PlacementQuestion {
+  id String @id @default(cuid())
+  /// vocabulary | grammar | reading | listening | sentence_construction | speaking
+  section   String
+  /// The level this item discriminates at.
+  levelCode String
+  prompt    String
+  context   String?
+  correctAnswer String
+  acceptedAnswers String?
+  explanation String
+  /// Transcript for listening items (played via TTS when no audio file).
+  audioText String?
+  orderIndex Int
+
+  options PlacementOption[]
+
+  @@index([section, levelCode])
+}
+
+model PlacementOption {
+  id        String  @id @default(cuid())
+  text      String
+  isCorrect Boolean @default(false)
+  orderIndex Int
+
+  questionId String
+  question   PlacementQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+model PlacementResult {
+  id String @id @default(cuid())
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Estimated level and the per-section evidence behind it.
+  estimatedLevel String
+  confidence     Float @default(0)
+
+  vocabularyScore Float @default(0)
+  grammarScore    Float @default(0)
+  readingScore    Float @default(0)
+  listeningScore  Float @default(0)
+  constructionScore Float @default(0)
+  speakingScore   Float?
+
+  correctCount  Int
+  questionCount Int
+  /// Human-readable recommendation, e.g. where to start and why.
+  recommendation String
+  /// Slug of the module the learner was told to start from.
+  recommendedModuleSlug String?
+  /// true when the learner chose "Start from A1" instead of taking the test.
+  skipped Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Culture & real-world scenarios
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CultureNote {
+  id    String @id @default(cuid())
+  slug  String @unique
+  title String
+  levelCode String
+  /// spain | latin_america | both
+  region String
+  /// food | music | film | history | tradition | slang | daily_life | language
+  topic  String
+  body   String
+  /// Country or area the note is about, e.g. "Andalucía", "México".
+  place  String?
+
+  @@index([levelCode])
+}
+
+/// An interactive real-world situation the learner can role-play (§15).
+model Scenario {
+  id    String @id @default(cuid())
+  slug  String @unique
+  title String
+  levelCode String
+  /// Where it happens, used for the tutor's system prompt.
+  setting String
+  /// What the learner is trying to accomplish.
+  goal    String
+  /// The role the AI plays, e.g. "a waiter in a Madrid tapas bar".
+  tutorRole String
+  icon    String @default("MessageCircle")
+  /// Phrases worth knowing before starting, newline-separated.
+  usefulPhrases String
+
+  @@index([levelCode])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Memory hooks (mnemonics)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A memory aid for a word or a grammar structure.
+///
+/// `userId` null means a curated hook everyone sees; set means a personal one
+/// the learner generated. Personal hooks are ranked first when both exist,
+/// because a self-generated image is more memorable than a borrowed one.
+model Mnemonic {
+  id String @id @default(cuid())
+
+  /// keyword | acronym | story | gender | etymology | contrast
+  kind  String
+  /// "word" | "grammar"
+  scope String
+
+  /// The memorable line itself.
+  hook        String
+  /// The scene to picture. Null for acronyms, which need no image.
+  imagery     String?
+  /// Why it works, or how to apply it.
+  explanation String?
+  /// The English sound-alike, for keyword mnemonics.
+  keyword     String?
+
+  /// "curated" | "ai" — surfaced in the UI so nothing is passed off as human-written.
+  origin String @default("curated")
+
+  wordId String?
+  word   VocabularyWord? @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  grammarTopicId String?
+  grammarTopic   GrammarTopic? @relation(fields: [grammarTopicId], references: [id], onDelete: Cascade)
+
+  /// Null for curated hooks shared by everyone.
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  helpfulCount   Int @default(0)
+  unhelpfulCount Int @default(0)
+
+  ratings   MnemonicRating[]
+  createdAt DateTime @default(now())
+
+  @@index([wordId])
+  @@index([grammarTopicId])
+  @@index([userId])
+}
+
+/// One rating per learner per hook, so counts cannot be inflated by re-voting.
+model MnemonicRating {
+  id String @id @default(cuid())
+
+  mnemonicId String
+  mnemonic   Mnemonic @relation(fields: [mnemonicId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  helpful   Boolean
+  createdAt DateTime @default(now())
+
+  @@unique([mnemonicId, userId])
+}

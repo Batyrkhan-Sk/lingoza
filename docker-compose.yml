@@ -1,0 +1,77 @@
+# Lingoza production stack.
+#
+#   docker compose up -d --build
+#
+# Three services: Postgres, the API (which also serves the SPA), and Caddy for
+# automatic HTTPS. Telegram requires a valid certificate on a public hostname,
+# and Caddy obtains and renews one from Let's Encrypt with no further setup —
+# which is the whole reason it is here rather than a bare port mapping.
+
+name: lingoza
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lingoza}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-lingoza}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Not published to the host: only the API needs it, and an exposed Postgres
+    # on a public VPS is scanned and brute-forced within hours.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lingoza} -d ${POSTGRES_DB:-lingoza}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lingoza}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lingoza}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      PUBLIC_API_URL: https://${DOMAIN:?DOMAIN must be set}
+      WEB_ORIGIN: https://${DOMAIN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      SEED_ON_START: ${SEED_ON_START:-true}
+    expose:
+      - "4000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # certificates — losing this re-requests them
+      - caddy-config:/config
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:

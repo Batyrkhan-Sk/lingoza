@@ -1,0 +1,22 @@
+{
+  "name": "@lingoza/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Lingoza backend: one REST API serving the web app, the Telegram bot and any future mobile client.",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -b",
+    "start": "node dist/main.js",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "telegram:register": "tsx src/telegram/register.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@lingoza/content": "*",
+    "@lingoza/engine": "*",
+    "@prisma/client": "^6.2.1",
+    "hono": "^4.6.14"
+  }
+}

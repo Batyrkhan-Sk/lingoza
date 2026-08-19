@@ -1,0 +1,46 @@
+{
+  "name": "lingoza",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lingoza \u2014 a complete Spanish learning ecosystem (A1 \u2192 C2) with one learning engine behind web, Telegram and mobile interfaces.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm-run-all --parallel dev:api dev:web",
+    "dev:api": "npm run dev --workspace @lingoza/api",
+    "dev:web": "npm run dev --workspace @lingoza/web",
+    "build": "npm run build --workspace @lingoza/engine && npm run build --workspace @lingoza/content && npm run build --workspace @lingoza/api && npm run build --workspace @lingoza/web",
+    "typecheck": "tsc -b packages/engine packages/content apps/api && npm run typecheck --workspace @lingoza/web",
+    "db:generate": "prisma generate",
+    "db:seed": "tsx --env-file-if-exists=.env prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "setup": "npm install && npm run db:up && npm run db:generate && npm run db:deploy && npm run db:seed",
+    "test": "node --test --experimental-strip-types packages/engine/test/*.test.ts",
+    "content:verify": "npm run verify --workspace @lingoza/content",
+    "db:up": "docker compose -f docker-compose.dev.yml up -d",
+    "db:down": "docker compose -f docker-compose.dev.yml down",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "deploy:build": "docker compose build",
+    "deploy:up": "docker compose up -d",
+    "deploy:logs": "docker compose logs -f api"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "npm-run-all": "^4.1.5",
+    "prisma": "^6.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.2.1"
+  },
+  "prisma": {
+    "seed": "tsx --env-file-if-exists=.env prisma/seed.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

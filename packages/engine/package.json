@@ -1,0 +1,19 @@
+{
+  "name": "@lingoza/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Lingoza learning engine: placement, spaced repetition, scoring, adaptivity, daily planning and AI evaluation. Framework-free and storage-free so every interface can share it.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  }
+}

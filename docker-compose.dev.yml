@@ -1,0 +1,32 @@
+# Local development database only.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Development now runs against the same Postgres version as production, so a
+# query that works locally works deployed. Nothing else is containerised in dev:
+# the API and web still run through tsx/Vite for fast reloads.
+
+name: lingoza-dev
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lingoza
+      POSTGRES_PASSWORD: lingoza
+      POSTGRES_DB: lingoza_dev
+    ports:
+      # 5434 on the host: 5432 and 5433 are already taken by other projects on
+      # this machine, and a port clash is a confusing failure to debug later.
+      - "5434:5432"
+    volumes:
+      - dev-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lingoza -d lingoza_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  dev-db-data:
