@@ -4,6 +4,7 @@ import { prisma } from "../../db.js";
 import {
   getDueQueue,
   getDueSummary,
+  getNewWordBudget,
   listVocabulary,
   reviewVocabulary,
   vocabularyTopics,
@@ -12,6 +13,7 @@ import {
   completeListening,
   completeReading,
   examplesForWord,
+  realUsageForWord,
   getListening,
   getReading,
   listListening,
@@ -96,8 +98,14 @@ studyRoutes.get("/vocabulary/topics", async (c) => c.json({ topics: await vocabu
 studyRoutes.get("/vocabulary/due", async (c) => {
   const user = c.get("user");
   const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 20;
-  const [queue, summary] = await Promise.all([getDueQueue(user.id, limit), getDueSummary(user.id)]);
-  return c.json({ queue, summary });
+  const [queue, summary, budget] = await Promise.all([
+    getDueQueue(user.id, limit),
+    getDueSummary(user.id),
+    getNewWordBudget(user.id),
+  ]);
+  // The budget travels with the queue so both interfaces can say *why* new
+  // words stopped, rather than silently running dry.
+  return c.json({ queue, summary, budget });
 });
 
 studyRoutes.post("/vocabulary/:id/review", async (c) => {
@@ -126,6 +134,11 @@ studyRoutes.post("/vocabulary/:id/review", async (c) => {
     }),
   );
 });
+
+/** The word in real Spanish — news, encyclopedic and everyday registers. */
+studyRoutes.get("/vocabulary/:id/usage", async (c) =>
+  c.json(await realUsageForWord(c.get("user").id, c.req.param("id"))),
+);
 
 studyRoutes.get("/vocabulary/:id/examples", async (c) =>
   c.json(await examplesForWord(c.get("user").id, c.req.param("id"))),

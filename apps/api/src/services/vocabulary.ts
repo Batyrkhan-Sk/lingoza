@@ -1,5 +1,6 @@
 import {
   checkAnswer,
+  localDateKey,
   dueCounts,
   gradeFromAnswer,
   initialReviewState,
@@ -23,8 +24,66 @@ import { recordActivity, refreshDerivedCounters } from "./progress.js";
  * always in frequency order, so the most useful words are learned first.
  */
 
+export interface NewWordBudget {
+  /** How many new words today's plan allocated. */
+  target: number;
+  /** How many have already been introduced today. */
+  introduced: number;
+  /** What is left. Zero means the session should stop offering new words. */
+  remaining: number;
+  /** True once the day's allocation is used up. */
+  reached: boolean;
+}
+
+/**
+ * How many new words the learner may still start today.
+ *
+ * The daily plan does not just describe the day, it *budgets* it. Introducing
+ * thirty words in one sitting feels productive and then produces an
+ * unmanageable review pile two days later — which is the point at which people
+ * abandon spaced repetition altogether. Capping introductions keeps future load
+ * proportional to the time the learner actually has.
+ *
+ * Reviews are never capped: they are already due, and skipping them is what
+ * loses words.
+ */
+export async function getNewWordBudget(userId: string): Promise<NewWordBudget> {
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  const today = localDateKey(new Date(), user.timezone);
+
+  const session = await prisma.dailySession.findUnique({
+    where: { userId_date: { userId, date: today } },
+    include: { items: true },
+  });
+
+  // The plan's own allocation, falling back to the engine's default shape when
+  // today's session has not been generated yet.
+  const target =
+    // An explicit setting always wins: a learner who asked for 30 a day meant it.
+    user.newWordsPerDay ??
+    session?.items.find((item) => item.kind === "vocabulary")?.quantity ??
+    Math.max(5, Math.round((user.dailyTimeBudget / 20) * 10));
+
+  // Count today's introductions by local date rather than a UTC window, so a
+  // learner in Almaty and one in Madrid both get a day that starts at midnight
+  // where they are. The 36-hour prefilter keeps this to an indexed range scan.
+  const recent = await prisma.vocabularyProgress.findMany({
+    where: { userId, firstSeenAt: { gte: new Date(Date.now() - 36 * 3600_000) } },
+    select: { firstSeenAt: true },
+  });
+  const introduced = recent.filter(
+    (row) => localDateKey(row.firstSeenAt, user.timezone) === today,
+  ).length;
+
+  const remaining = Math.max(0, target - introduced);
+  return { target, introduced, remaining, reached: remaining === 0 };
+}
+
 export async function getDueQueue(userId: string, limit = 20) {
-  const progress = await prisma.userProgress.findUnique({ where: { userId } });
+  const [progress, budget] = await Promise.all([
+    prisma.userProgress.findUnique({ where: { userId } }),
+    getNewWordBudget(userId),
+  ]);
   const level = parseLevel(progress?.currentLevelCode);
 
   const existing = await prisma.vocabularyProgress.findMany({
@@ -37,16 +96,17 @@ export async function getDueQueue(userId: string, limit = 20) {
     dueAt: (item) => item.dueAt,
     status: (item) => item.status as ReviewState["status"],
     limit,
-    newLimit: 10,
+    newLimit: budget.remaining,
   });
 
-  // Top up with words the learner has never seen, most frequent first.
-  if (due.length < limit) {
+  // Top up with words the learner has never seen, most frequent first —
+  // but only up to what today's budget still allows.
+  if (due.length < limit && budget.remaining > 0) {
     const seenIds = existing.map((item) => item.wordId);
     const fresh = await prisma.vocabularyWord.findMany({
       where: { id: { notIn: seenIds }, levelCode: { in: servableLevels(level) } },
       orderBy: [{ frequencyRank: "asc" }],
-      take: limit - due.length,
+      take: Math.min(limit - due.length, budget.remaining),
     });
 
     return [

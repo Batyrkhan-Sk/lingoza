@@ -50,6 +50,11 @@ export interface DailyPlanInput {
   wordsDue?: number;
   /** New words available at the learner's level. */
   newWordsAvailable?: number;
+  /**
+   * How many new words the learner wants per day, if they have said.
+   * Overrides the default allocation derived from their time budget.
+   */
+  newWordsTarget?: number;
 }
 
 export interface DailyPlan {
@@ -110,10 +115,13 @@ export function generateDailyPlan(input: DailyPlanInput): DailyPlan {
   }
 
   // 2. New vocabulary — 5–10 at the reference budget.
+  // 10 at the reference budget. The ceiling is deliberately generous rather
+  // than paternalistic: a learner who wants a heavy day should get one, and the
+  // consequence — a larger review queue in two days — is theirs to manage.
   const newWords = clamp(
-    Math.round(7 * scale * mix.vocabulary),
+    Math.round((input.newWordsTarget ?? 10) * scale * mix.vocabulary),
     budget <= 10 ? 3 : 5,
-    Math.min(newWordsAvailable, 20),
+    Math.min(newWordsAvailable, 40),
   );
   if (newWords > 0) {
     push({

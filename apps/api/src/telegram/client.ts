@@ -206,7 +206,7 @@ export class TelegramClient {
         { command: "daily", description: "Today's personalised session" },
         { command: "lesson", description: "Continue your current lesson" },
         { command: "review", description: "Review words that are due" },
-        { command: "vocabulary", description: "Browse your vocabulary" },
+        { command: "vocabulary", description: "Your words, or /vocabulary <word> to look one up" },
         { command: "practice", description: "Grammar practice" },
         { command: "hook", description: "Memory hook for a word" },
         { command: "explain", description: "Break down a line of Spanish" },

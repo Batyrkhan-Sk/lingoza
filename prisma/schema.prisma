@@ -49,6 +49,9 @@ model User {
   dialectPreference String @default("es-ES")
   /// Minutes/day the learner committed to: 10 | 20 | 30 | 45 | 60
   dailyTimeBudget   Int    @default(20)
+  /// New words per day. Null means derive it from the time budget; setting it
+  /// lets a learner deliberately run heavier or lighter than the default.
+  newWordsPerDay    Int?
   timezone          String @default("UTC")
 
   remindersEnabled Boolean   @default(true)
@@ -994,6 +997,10 @@ model DailySessionItem {
   title      String
   /// Why this item is in today's plan, e.g. "12 words due", "weak: preterite".
   rationale  String
+  /// How many underlying units the item covers — words, questions. Persisted
+  /// because it is a *budget*, not display text: the vocabulary session stops
+  /// once the day's allocation of new words has been introduced.
+  quantity   Int?
   minutes    Int     @default(3)
   orderIndex Int
   completed  Boolean @default(false)

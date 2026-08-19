@@ -15,6 +15,7 @@ import { completeLessonSection, getLesson, getNextLesson, startLesson } from "..
 import { submitExercise } from "../services/assessment.js";
 import { sendConversationMessage, startConversation } from "../services/practice.js";
 import { getSpeech, synthesisAvailable } from "../services/speech.js";
+import { realUsageForWord } from "../services/media.js";
 import { explainSpanishLine } from "../services/authentic.js";
 import {
   browseFilms,
@@ -145,7 +146,12 @@ async function handleMessage(message: NonNullable<TelegramUpdate["message"]>): P
     case "/review":
       return sendReviewCard(chat.id, user.id);
     case "/vocabulary":
-      return sendVocabulary(chat.id, user.id);
+    case "/word":
+      // With an argument this becomes a lookup: the learner types a word and
+      // gets it in real Spanish, rather than only their own statistics.
+      return args.length > 0
+        ? sendWordUsage(chat.id, user.id, args.join(" "))
+        : sendVocabulary(chat.id, user.id);
     case "/practice":
       return sendPractice(chat.id, user.id);
     case "/hook":
@@ -817,6 +823,109 @@ async function sendExplanation(chatId: number, userId: string, line: string): Pr
   });
 }
 
+/**
+ * One word, shown as it is actually used.
+ *
+ * The curated example is pitched at the learner's level and shows meaning; the
+ * sourced ones show behaviour — which register the word belongs to, what it
+ * collocates with, and often that it has senses the dictionary entry omitted.
+ */
+async function sendWordUsage(chatId: number, userId: string, query: string): Promise<void> {
+  const bare = query.trim().toLowerCase();
+
+  const word = await prisma.vocabularyWord.findFirst({
+    where: {
+      OR: [
+        { spanish: { equals: bare, mode: "insensitive" } },
+        { spanish: { equals: `el ${bare}`, mode: "insensitive" } },
+        { spanish: { equals: `la ${bare}`, mode: "insensitive" } },
+        { english: { equals: bare, mode: "insensitive" } },
+      ],
+    },
+  });
+
+  if (!word) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        `I do not have *${escapeMarkdown(query)}* in the vocabulary yet.\n\n` +
+        "Send `/explain " + escapeMarkdown(query) + "` and I will break it down anyway.",
+    });
+    return;
+  }
+
+  await telegram.sendMessage({ chatId, text: "🔍 Looking for it in real Spanish…" });
+  const usage = await realUsageForWord(userId, word.id);
+
+  const lines = [
+    `*${escapeMarkdown(word.spanish)}* — ${escapeMarkdown(word.english)}`,
+    `_${escapeMarkdown(word.pronunciation)}_${word.gender ? ` · ${word.gender === "m" ? "masculine" : "feminine"}` : ""} · ${word.levelCode}`,
+    "",
+    `🇪🇸 ${escapeMarkdown(usage.authored.sentence)}`,
+    `🇬🇧 _${escapeMarkdown(usage.authored.translation)}_`,
+  ];
+
+  const labels: Record<string, string> = {
+    everyday: "Everyday",
+    news: "In the news",
+    encyclopedic: "Formal / written",
+  };
+
+  if (usage.examples.length > 0) {
+    lines.push("", "───", "*In real Spanish*");
+    for (const example of usage.examples.slice(0, 5)) {
+      lines.push("", `_${labels[example.register] ?? example.register}_`);
+      lines.push(escapeMarkdown(truncate(example.sentence, 200)));
+      if (example.translation) lines.push(`_${escapeMarkdown(example.translation)}_`);
+      lines.push(`— ${escapeMarkdown(example.source)}`);
+    }
+  } else {
+    lines.push("", "_No real-world examples found for this one right now._");
+  }
+
+  await telegram.sendMessage({
+    chatId,
+    text: lines.join("\n"),
+    keyboard: [
+      [
+        { text: "🔊 Hear it", callback_data: `hear:${word.id}` },
+        { text: "💡 Memory hook", callback_data: `hook:${word.id}` },
+      ],
+      [{ text: "➕ Add to my reviews", callback_data: `learn:${word.id}` }],
+    ],
+  });
+}
+
+/** Put a word into the learner's spaced-repetition queue, due now. */
+async function startLearningWord(chatId: number, userId: string, wordId: string): Promise<void> {
+  const word = await prisma.vocabularyWord.findUnique({ where: { id: wordId } });
+  if (!word) return;
+
+  const existing = await prisma.vocabularyProgress.findUnique({
+    where: { userId_wordId: { userId, wordId } },
+  });
+
+  if (existing) {
+    await telegram.sendMessage({
+      chatId,
+      text: `*${escapeMarkdown(word.spanish)}* is already in your reviews — next due ${existing.dueAt < new Date() ? "now" : "later"}.`,
+    });
+    return;
+  }
+
+  // Deliberately outside the daily new-word budget: the learner asked for this
+  // specific word, which is a different act from being handed today's ten.
+  await prisma.vocabularyProgress.create({
+    data: { userId, wordId, dueAt: new Date(), status: "learning" },
+  });
+
+  await telegram.sendMessage({
+    chatId,
+    text: `➕ *${escapeMarkdown(word.spanish)}* added. It will come back in your reviews, and in your reminders.`,
+    keyboard: [[{ text: "🔁 Review now", callback_data: "review" }]],
+  });
+}
+
 async function sendVocabulary(chatId: number, userId: string): Promise<void> {
   const [total, learning, mastered, due] = await Promise.all([
     prisma.vocabularyProgress.count({ where: { userId } }),
@@ -1167,6 +1276,9 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
 
     case "hook":
       return sendWordHook(chatId, user.id, args[0]!);
+
+    case "learn":
+      return startLearningWord(chatId, user.id, args[0]!);
 
     case "hear": {
       const word = await prisma.vocabularyWord.findUnique({ where: { id: args[0]! } });

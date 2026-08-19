@@ -1,6 +1,7 @@
 import { explainWord, parseLevel, servableLevels, XP_REWARDS, type Interface } from "@lingoza/engine";
 import { prisma } from "../db.js";
 import { ai, sources } from "./ai.js";
+import { UsageSource } from "@lingoza/content";
 import { recordActivity } from "./progress.js";
 
 /**
@@ -177,6 +178,33 @@ export async function lookupWord(input: {
   });
 
   return explanation;
+}
+
+/**
+ * The word as it is actually used, across registers.
+ *
+ * A single authored example shows meaning; seeing the word in a news headline,
+ * an encyclopedia entry and an everyday sentence shows behaviour — which
+ * register it belongs to, what it collocates with, how it inflects in the wild.
+ */
+const usage = new UsageSource({ timeoutMs: 7000 });
+
+export async function realUsageForWord(userId: string, wordId: string) {
+  const [word, progress] = await Promise.all([
+    prisma.vocabularyWord.findUniqueOrThrow({ where: { id: wordId } }),
+    prisma.userProgress.findUnique({ where: { userId } }),
+  ]);
+
+  const result = await usage.find(word.spanish, parseLevel(progress?.currentLevelCode));
+
+  return {
+    word: word.spanish,
+    // The curated example stays first: it is pitched at the learner's level,
+    // whereas real usage is whatever the world happened to write.
+    authored: { sentence: word.exampleSentence, translation: word.exampleTranslation },
+    examples: result.examples,
+    attribution: result.attribution,
+  };
 }
 
 /** Attested example sentences for a word, from open data. */

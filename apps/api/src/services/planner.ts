@@ -156,6 +156,7 @@ export async function getDailySession(userId: string, regenerate = false) {
     grammarTopic: grammarTopic ? { id: grammarTopic.id, title: grammarTopic.title } : null,
     wordsDue: snapshot.wordsDue,
     newWordsAvailable: availableNewWords,
+    newWordsTarget: user.newWordsPerDay ?? undefined,
   });
 
   return prisma.dailySession.create({
@@ -169,6 +170,7 @@ export async function getDailySession(userId: string, regenerate = false) {
           kind: item.kind,
           title: item.title,
           rationale: item.rationale,
+          quantity: item.quantity ?? null,
           minutes: item.minutes,
           orderIndex: item.orderIndex,
           lessonId: item.lessonId ?? null,

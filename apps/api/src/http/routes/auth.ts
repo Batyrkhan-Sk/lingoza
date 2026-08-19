@@ -102,6 +102,7 @@ authRoutes.get("/me", async (c) => {
     displayName: full.displayName,
     dialectPreference: full.dialectPreference,
     dailyTimeBudget: full.dailyTimeBudget,
+    newWordsPerDay: full.newWordsPerDay,
     timezone: full.timezone,
     telegramLinked: Boolean(full.telegramId),
     remindersEnabled: full.remindersEnabled,
@@ -117,6 +118,7 @@ authRoutes.patch("/me", async (c) => {
     displayName?: string;
     dialectPreference?: string;
     dailyTimeBudget?: number;
+    newWordsPerDay?: number;
     timezone?: string;
     remindersEnabled?: boolean;
     reminderHours?: number[];
@@ -132,6 +134,11 @@ authRoutes.patch("/me", async (c) => {
         : {}),
       ...(body.dailyTimeBudget && [10, 20, 30, 45, 60].includes(body.dailyTimeBudget)
         ? { dailyTimeBudget: body.dailyTimeBudget }
+        : {}),
+      ...(typeof body.newWordsPerDay === "number"
+        ? // Clamped rather than validated against a list: any number in range is
+          // a legitimate choice, and 0 is a valid "reviews only" mode.
+          { newWordsPerDay: Math.max(0, Math.min(50, Math.round(body.newWordsPerDay))) }
         : {}),
       ...(body.timezone ? { timezone: body.timezone } : {}),
       ...(typeof body.remindersEnabled === "boolean"
