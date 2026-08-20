@@ -858,4 +858,25 @@ describe("passage alignment", () => {
     const aligned = alignPassage(lines, []);
     assert.deepEqual(aligned.map((line) => line.original), lines);
   });
+
+  test("grammar and dialect stay separate, and half-written points are dropped", () => {
+    // A point with no explanation renders as a bare label with nothing taught,
+    // which reads as a bug rather than as brevity.
+    const aligned = alignPassage(lines, [
+      {
+        index: 0,
+        translation: "one",
+        grammar: [
+          { point: "Subjunctive after ojalá", explanation: "Ojalá always takes it." },
+          { point: "Missing its explanation" },
+        ],
+        dialect: "Final -s dropped: quiere' = quieres",
+      },
+    ]);
+
+    assert.equal(aligned[0]!.grammar.length, 1);
+    assert.equal(aligned[0]!.grammar[0]!.point, "Subjunctive after ojalá");
+    assert.match(aligned[0]!.dialect!, /quieres/);
+    assert.deepEqual(aligned[1]!.grammar, [], "a line with no entry has no grammar, not undefined");
+  });
 });

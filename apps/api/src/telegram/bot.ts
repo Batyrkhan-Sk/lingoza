@@ -1066,11 +1066,20 @@ async function renderBreakdownPage(chatId: number, page: BreakdownPage): Promise
   for (const line of page.lines) {
     const block = [`🇪🇸 *${escapeMarkdown(line.original)}*`];
     if (line.translation) block.push(`🇬🇧 ${escapeMarkdown(line.translation)}`);
+
     for (const word of line.words) {
       const note = word.note ? ` _(${escapeMarkdown(word.note)})_` : "";
       block.push(`  • ${escapeMarkdown(word.surface)} — ${escapeMarkdown(word.meaning)}${note}`);
     }
-    if (line.note) block.push(`  _${escapeMarkdown(line.note)}_`);
+
+    // Grammar and dialect are marked differently on purpose: one is a rule to
+    // learn and use, the other a sound to recognise and never write. A learner
+    // skimming a long passage should be able to tell them apart at a glance.
+    for (const point of line.grammar) {
+      block.push(`  📐 *${escapeMarkdown(point.point)}* — ${escapeMarkdown(point.explanation)}`);
+    }
+    if (line.dialect) block.push(`  🗣 _${escapeMarkdown(line.dialect)}_`);
+
     blocks.push(block.join("\n"));
   }
 

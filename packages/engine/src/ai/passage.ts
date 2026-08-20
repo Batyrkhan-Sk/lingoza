@@ -31,14 +31,40 @@ export interface PassageWord {
   note?: string;
 }
 
+/**
+ * A structure worth teaching from one line.
+ *
+ * Separate from {@link PassageLine.dialect} because they are different kinds
+ * of difficulty and want different responses from the learner. Grammar is a
+ * rule to learn and then produce; a dropped consonant is a sound to recognise
+ * and never write. Collapsing both into one remark — which is what a single
+ * "note" field does — teaches a beginner to write "vamo'" alongside the
+ * subjunctive, as though the two were the same kind of fact.
+ */
+export interface PassageGrammar {
+  /** The name of the structure: "subjunctive after ojalá". */
+  point: string;
+  /** Why it is that way here, in a sentence or two. */
+  explanation: string;
+}
+
 export interface PassageLine {
   original: string;
   /** Natural English, the way a person would say it. */
   translation: string;
   /** Only the words likely to have stopped the learner. */
   words: PassageWord[];
-  /** One short remark when the line does something worth naming. */
-  note?: string;
+  /**
+   * The grammar this line is doing — at most two points, and only where the
+   * line genuinely teaches something. Most lines of most songs teach nothing
+   * grammatically and get none.
+   */
+  grammar: PassageGrammar[];
+  /**
+   * Pronunciation and register: dropped consonants, regionalisms, slang.
+   * Usually the real reason a line is impenetrable despite familiar words.
+   */
+  dialect?: string;
 }
 
 export interface PassageExplanation {
@@ -53,7 +79,8 @@ You are given numbered lines. Explain EVERY line, in order, keeping the numberin
 For each line:
 - "translation": natural English, the way someone would actually say it. Not word for word.
 - "words": ONLY the words likely to have stopped this learner — slang, contractions, idioms, false friends, unusual tenses. Two to four per line, and none at all for a line that holds no difficulty. Do not gloss every article and pronoun.
-- "note": at most one short remark, and only when the line genuinely does something worth naming — a subjunctive, a dropped consonant, an idiom that is not literal, a double meaning. Omit it otherwise.
+- "grammar": the structure this line is built on, when it teaches one. Name it, then explain why it is that way HERE, in this line, referring to the actual words — not a textbook paragraph that would fit any sentence. Two entries at most, usually zero or one. Worth naming: a tense or mood choice and what forced it, a pronoun placement, ser vs estar, por vs para, a reflexive or impersonal construction, an idiom whose grammar is not literal, agreement that is not obvious, a conditional or hypothetical. Not worth naming: that a noun has an article, that an adjective follows a noun, or anything the learner's level has long since covered.
+- "dialect": pronunciation and register only — dropped consonants, aspirated s, regionalisms, slang. Keep this separate from grammar: it is a sound to recognise, not a rule to reproduce. Say the standard form. Omit when the line is standard.
 
 Real Spanish, especially sung, is full of forms that look like unknown words and are not:
 - dropped final -s (vamo' = vamos), lost intervocalic -d- (to' = todo, pa' = para, cansao = cansado)
@@ -61,12 +88,14 @@ Real Spanish, especially sung, is full of forms that look like unknown words and
 - eaten opening syllables ('toy = estoy), -r becoming -l in the Caribbean
 Restore the standard form in "note" rather than treating the sung form as vocabulary.
 
+A grammar point that recurs is explained again where it recurs, briefly — a learner reading line 30 is not scrolling back to line 4, and the second encounter is where a structure starts to stick.
+
 A repeated line gets the same explanation again — do not write "as above". A line that is a single interjection or vocalisation gets a translation and nothing else.
 
 Translate plainly and factually, including vulgar, sexual or violent content: the learner needs to know what they are hearing. Do not censor, soften or moralise.
 
 Respond with ONLY JSON:
-{"lines":[{"index":0,"translation":"...","words":[{"surface":"...","meaning":"...","note":"..."}],"note":"..."}]}`;
+{"lines":[{"index":0,"translation":"...","words":[{"surface":"...","meaning":"...","note":"..."}],"grammar":[{"point":"...","explanation":"..."}],"dialect":"..."}]}`;
 
 export interface PassageRequest {
   /** The lines to explain, in reading order. Keep a batch small — see the caller. */
@@ -84,12 +113,7 @@ export async function explainPassage(
   if (lines.length === 0) return null;
 
   const result = await ai.json<{
-    lines?: {
-      index?: number;
-      translation?: string;
-      words?: { surface?: string; meaning?: string; note?: string }[];
-      note?: string;
-    }[];
+    lines?: PassageEntry[];
   }>({
     system: `${SYSTEM}
 
@@ -104,10 +128,11 @@ ${LEVEL_REGISTER[request.level]}`,
       },
     ],
     temperature: 0.3,
-    // Roughly 250 tokens a line, and a short batch is cheaper to retry than a
-    // long one is to salvage: a truncated response loses the whole batch,
-    // because the JSON never closes.
-    maxTokens: Math.min(4000, 400 + lines.length * 260),
+    // A short batch is cheaper to retry than a long one is to salvage: a
+    // truncated response loses the whole batch, because the JSON never closes.
+    // The per-line allowance covers a translation, a few glosses and a grammar
+    // point explained against the line rather than in the abstract.
+    maxTokens: Math.min(4500, 400 + lines.length * 340),
   });
 
   if (!result) return null;
@@ -128,17 +153,17 @@ ${LEVEL_REGISTER[request.level]}`,
  * and a line that ends up with nothing is shown untranslated rather than
  * borrowing someone else's translation.
  */
-export function alignPassage(
-  lines: string[],
-  entries: {
-    index?: number;
-    translation?: string;
-    words?: { surface?: string; meaning?: string; note?: string }[];
-    note?: string;
-  }[],
-): PassageLine[] {
-  const byLine = new Map<number, (typeof entries)[number]>();
-  const unplaced: typeof entries = [];
+interface PassageEntry {
+  index?: number;
+  translation?: string;
+  words?: { surface?: string; meaning?: string; note?: string }[];
+  grammar?: { point?: string; explanation?: string }[];
+  dialect?: string;
+}
+
+export function alignPassage(lines: string[], entries: PassageEntry[]): PassageLine[] {
+  const byLine = new Map<number, PassageEntry>();
+  const unplaced: PassageEntry[] = [];
 
   for (const entry of entries) {
     const index = entry?.index;
@@ -171,7 +196,10 @@ export function alignPassage(
           meaning: word.meaning!.trim(),
           note: word.note?.trim() || undefined,
         })),
-      note: entry?.note?.trim() || undefined,
+      grammar: (entry?.grammar ?? [])
+        .filter((point) => point?.point && point.explanation)
+        .map((point) => ({ point: point.point!.trim(), explanation: point.explanation!.trim() })),
+      dialect: entry?.dialect?.trim() || undefined,
     };
   });
 }
