@@ -7,7 +7,13 @@ import {
   type TutorScenario,
 } from "@lingoza/engine";
 import { prisma } from "../db.js";
-import { escapeMarkdown, progressBar, telegram, type InlineKeyboard } from "./client.js";
+import {
+  escapeHtml,
+  escapeMarkdown,
+  progressBar,
+  telegram,
+  type InlineKeyboard,
+} from "./client.js";
 import { ensureProgress, getDashboard } from "../services/progress.js";
 import { getDailySession, getHome } from "../services/planner.js";
 import { getDueQueue, reviewVocabulary } from "../services/vocabulary.js";
@@ -1043,7 +1049,8 @@ async function renderBreakdownPage(chatId: number, page: BreakdownPage): Promise
   if (page.message) {
     await telegram.sendMessage({
       chatId,
-      text: escapeMarkdown(page.message),
+      text: escapeHtml(page.message),
+      parseMode: "HTML",
       keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
     });
     return;
@@ -1062,20 +1069,27 @@ async function renderBreakdownPage(chatId: number, page: BreakdownPage): Promise
   }
 
   const blocks: string[] = [
-    `*Lines ${page.from}–${page.to} of ${page.total}*` +
+    `<b>Lines ${page.from}–${page.to} of ${page.total}</b>` +
       // The credit rides on every page rather than only the first: a licence
       // that requires attribution requires it wherever the words appear, and
       // in a chat each page is its own screen.
-      (page.attribution ? `\n_${escapeMarkdown(page.attribution)}_` : ""),
+      (page.attribution ? `\n<i>${escapeHtml(page.attribution)}</i>` : ""),
   ];
 
   for (const line of page.lines) {
-    const block = [`🇪🇸 *${escapeMarkdown(line.original)}*`];
-    if (line.translation) block.push(`🇬🇧 ${escapeMarkdown(line.translation)}`);
+    // The line and its meaning go inside a blockquote, and everything else
+    // stays outside it. That is the actual distinction on the screen: the
+    // quote is the material being read, the rest is us talking about it. It
+    // also gives the eye a rail to run down when scrolling a long passage,
+    // which a wall of bold text does not.
+    const quoted = [`🇪🇸 <b>${escapeHtml(line.original)}</b>`];
+    if (line.translation) quoted.push(`🇬🇧 <i>${escapeHtml(line.translation)}</i>`);
+
+    const block = [`<blockquote>${quoted.join("\n")}</blockquote>`];
 
     for (const word of line.words) {
-      const note = word.note ? ` _(${escapeMarkdown(word.note)})_` : "";
-      block.push(`  • ${escapeMarkdown(word.surface)} — ${escapeMarkdown(word.meaning)}${note}`);
+      const note = word.note ? ` <i>(${escapeHtml(word.note)})</i>` : "";
+      block.push(`• <b>${escapeHtml(word.surface)}</b> — ${escapeHtml(word.meaning)}${note}`);
     }
 
     // Grammar and dialect are marked differently on purpose: one is a rule to
@@ -1086,9 +1100,9 @@ async function renderBreakdownPage(chatId: number, page: BreakdownPage): Promise
     // read at different speeds — a gloss is scanned, an explanation is read —
     // and running them together turns the whole entry into one grey block.
     const notes: string[] = line.grammar.map(
-      (point) => `  🧩 *${escapeMarkdown(point.point)}* — ${escapeMarkdown(point.explanation)}`,
+      (point) => `🧩 <b>${escapeHtml(point.point)}</b> — ${escapeHtml(point.explanation)}`,
     );
-    if (line.dialect) notes.push(`  🗣 _${escapeMarkdown(line.dialect)}_`);
+    if (line.dialect) notes.push(`🗣 <i>${escapeHtml(line.dialect)}</i>`);
 
     if (notes.length > 0) {
       if (line.words.length > 0) block.push("");
@@ -1117,6 +1131,10 @@ async function renderBreakdownPage(chatId: number, page: BreakdownPage): Promise
     await telegram.sendMessage({
       chatId,
       text,
+      // HTML rather than Markdown for this screen alone: it is the only one
+      // that needs a blockquote, and its content is learner-pasted text, where
+      // three escapable characters beat Markdown's dozen.
+      parseMode: "HTML",
       // The keyboard rides on the final message so the button sits at the
       // bottom of the passage, where the reader has just arrived.
       keyboard: last

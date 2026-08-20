@@ -83,11 +83,15 @@ export class TelegramClient {
     });
     if (sent) return sent;
 
-    // Strip the markers as well as dropping parse_mode, so the reader does not
-    // get a message full of stray asterisks and backslashes.
+    // Strip the markup as well as dropping parse_mode, so the reader does not
+    // get a message full of stray asterisks or visible tags. Which stripper
+    // depends on what the text was written in — running the markdown one over
+    // HTML would leave every <b> in place, which is the failure this fallback
+    // exists to avoid.
     return this.call<{ message_id: number }>("sendMessage", {
       ...payload,
-      text: stripMarkdown(options.text),
+      text:
+        options.parseMode === "HTML" ? stripHtml(options.text) : stripMarkdown(options.text),
     });
   }
 
@@ -237,6 +241,28 @@ export function stripMarkdown(text: string): string {
 /** Escape text that will be sent with Markdown parse mode. */
 export function escapeMarkdown(text: string): string {
   return text.replace(/([_*`\[\]])/g, "\\$1");
+}
+
+/**
+ * Escape text for HTML parse mode.
+ *
+ * Three characters, against Markdown's dozen and MarkdownV2's eighteen, which
+ * is the reason the richer layouts use HTML: the escaping is small enough to
+ * be obviously correct, and learner-pasted text is exactly the input that
+ * finds the gaps in a longer list.
+ */
+export function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Remove HTML tags for the plain-text fallback, unescaping the entities. */
+export function stripHtml(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
 }
 
 /** Render a progress bar for the chat, e.g. ████████░░ 78% */
