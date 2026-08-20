@@ -590,11 +590,35 @@ function exampleContainsWord(sentence: string, headword: string): boolean {
   if (!bare) return true;
   const haystack = normalize(sentence);
 
-  // Match the stem so conjugations and plurals count: "hablar" ↔ "hablo",
-  // "amigo" ↔ "amigos". Four characters is enough to avoid false positives on
-  // short function words while tolerating inflection.
-  const stem = bare.length > 5 ? bare.slice(0, bare.length - 2) : bare;
-  return haystack.includes(stem);
+  const tokens = bare.split(/\s+/).filter(Boolean);
+
+  // Multi-word headwords: check the content words individually. A phrase is
+  // almost never quoted verbatim — "echar de menos" surfaces as "echo de
+  // menos" — so requiring the literal string produces nothing but noise.
+  if (tokens.length > 1) {
+    const content = tokens
+      // Infinitives conjugate away entirely — "darse prisa" appears as "date
+      // prisa", "no tener desperdicio" as "no tiene desperdicio" — so it is
+      // the rest of the phrase that identifies it in a sentence.
+      .filter((token) => !/(ar|er|ir)(se)?$/.test(token))
+      .filter((token) => token.length >= 4);
+    if (content.length === 0) return true;
+    return content.every((token) => haystack.includes(stemOf(token)));
+  }
+
+  return haystack.includes(stemOf(bare));
+}
+
+/**
+ * A crude inflectional stem — enough to survive Spanish agreement and apocope
+ * without a morphological analyser. Trimming the final vowel is what lets
+ * "mismo" match "misma", "bueno" match "buen" and "malo" match "mal"; three
+ * characters is the floor, below which the match stops meaning anything.
+ */
+function stemOf(word: string): string {
+  if (word.length > 5) return word.slice(0, word.length - 2);
+  if (word.length >= 4 && /[aeo]$/.test(word)) return word.slice(0, word.length - 1);
+  return word;
 }
 
 function stripArticle(word: string): string {
