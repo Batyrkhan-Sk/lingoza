@@ -4,6 +4,7 @@ import { DeezerSource, SUGGESTED_ARTISTS, type MusicQuery } from "./deezer.js";
 import { TmdbSource, SUGGESTED_WATCHING, type FilmQuery } from "./tmdb.js";
 import { GutenbergSource, type BookQuery } from "./gutenberg.js";
 import { PodcastSource, type PodcastQuery, type PodcastShow } from "./podcasts.js";
+import { LyricsSource, type LyricsAnalysisInput, type LyricsQuery } from "./lyrics.js";
 import type {
   SourcedBook,
   SourcedEncyclopediaEntry,
@@ -50,6 +51,7 @@ export class MediaSources {
   private readonly tmdb: TmdbSource;
   private readonly gutenberg: GutenbergSource;
   private readonly podcasts: PodcastSource;
+  private readonly lyrics: LyricsSource;
   private readonly cache = new Map<string, CacheEntry>();
 
   constructor(private readonly options: MediaOptions = {}) {
@@ -59,6 +61,7 @@ export class MediaSources {
     this.tmdb = new TmdbSource(options.tmdbApiKey ?? "", fetchOptions);
     this.gutenberg = new GutenbergSource(fetchOptions);
     this.podcasts = new PodcastSource(fetchOptions);
+    this.lyrics = new LyricsSource(fetchOptions);
   }
 
   get enabled(): boolean {
@@ -109,6 +112,31 @@ export class MediaSources {
     return this.cached(`music:${query.search}:${query.limit ?? 10}`, () =>
       this.deezer.fetch(query),
     );
+  }
+
+  /** One track by id — what a chat callback or a saved reference carries. */
+  async track(id: number): Promise<SourcedTrack | null> {
+    if (!this.enabled) return null;
+    return this.deezer.track(id);
+  }
+
+  /**
+   * Lyric text for one track, **for analysis only**.
+   *
+   * Deliberately not routed through `cached()`, and deliberately returning a
+   * type that no route may serialise. Every other method here caches its
+   * payload because every other payload is something we are allowed to hold;
+   * this one is not. It is fetched, read by the analyser, and dropped — the
+   * derived summary is what gets cached, upstream, where it is safe to.
+   *
+   * Callers pass a `SourcedTrack` straight from `music()`, which is where the
+   * separate artist / title / duration fields come from. Both providers key on
+   * those as distinct fields, so a free-text search string cannot be used
+   * here — the structured Deezer result is what makes the lookup reliable.
+   */
+  async lyricsForAnalysis(query: LyricsQuery): Promise<LyricsAnalysisInput | null> {
+    if (!this.enabled) return null;
+    return this.lyrics.fetch(query);
   }
 
   async films(query: FilmQuery): Promise<SourceResult<SourcedFilm>> {

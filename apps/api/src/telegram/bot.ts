@@ -18,6 +18,14 @@ import { getSpeech, synthesisAvailable } from "../services/speech.js";
 import { realUsageForWord } from "../services/media.js";
 import { explainSpanishLine } from "../services/authentic.js";
 import {
+  findTracks,
+  keepableWords,
+  recordSongQuiz,
+  saveSongWords,
+  songExerciseAt,
+  studySong,
+} from "../services/songs.js";
+import {
   browseFilms,
   browsePodcasts,
   getMediaOverview,
@@ -165,6 +173,9 @@ async function handleMessage(message: NonNullable<TelegramUpdate["message"]>): P
       return sendExplanation(chat.id, user.id, args.join(" "));
     case "/media":
       return sendMedia(chat.id, user.id, args.join(" "));
+    case "/song":
+    case "/lyrics":
+      return sendSongSearch(chat.id, user.id, args.join(" "));
     case "/watch":
       return sendWatchList(chat.id, user.id);
     case "/podcast":
@@ -256,6 +267,7 @@ function mainMenu(): InlineKeyboard {
       { text: "🎬 Real Spanish", callback_data: "media" },
       { text: "🎧 Podcasts", callback_data: "podcast" },
     ],
+    [{ text: "🎵 Study a song", callback_data: "songhelp" }],
   ];
 }
 
@@ -520,7 +532,9 @@ async function sendMedia(chatId: number, userId: string, query: string): Promise
       text:
         "*Real Spanish*\n\n" +
         "Films, music and articles made for Spanish speakers — not for learners.\n\n" +
-        "Send `/media <name>` — for example `/media Coco` or `/media Bad Bunny`.\n\n" +
+        "Send `/media <name>` — for example `/media Coco` or `/media Bad Bunny`.\n" +
+        "Tap any song in the results, or send `/song <artist> <title>`, to see how much " +
+        "of it you can already follow.\n\n" +
         (artists.length > 0
           ? "*Listen, easiest first*\n" +
             artists.map((a) => `• ${escapeMarkdown(a.name)} (${a.level}) — ${escapeMarkdown(a.why)}`).join("\n") +
@@ -584,6 +598,11 @@ async function sendMedia(chatId: number, userId: string, query: string): Promise
   // Tracks are listed with a link rather than played: a 30-second clip with no
   // lyrics to follow is noise in a chat. Listening happens on the platform,
   // and any line from it can come back here via /explain.
+  //
+  // "Study" sits between those two. It reads the song's lyrics to work out
+  // what is in them — how much the learner already knows, which words to
+  // learn first, what grammar it runs on — and reports that, without
+  // reproducing the lyrics themselves.
   if (tracks.length > 0) {
     await telegram.sendMessage({
       chatId,
@@ -592,14 +611,332 @@ async function sendMedia(chatId: number, userId: string, query: string): Promise
         tracks
           .map((t) => `• ${escapeMarkdown(t.title)} — ${escapeMarkdown(t.artist)}`)
           .join("\n") +
-        "\n\n_Listen on the platform, then send me any line with_ `/explain <line>` _for a full breakdown._",
-      keyboard: tracks
-        .slice(0, 3)
-        .map((t) => [{ text: `🔗 ${t.title.slice(0, 30)}`, url: t.externalUrl }]),
+        "\n\n_Tap a song to see how much of it you can already follow._",
+      keyboard: tracks.slice(0, 3).map((t) => [
+        { text: `📚 ${t.title.slice(0, 26)}`, callback_data: `song:${t.id}` },
+        { text: "🔗 Listen", url: t.externalUrl },
+      ]),
     });
   }
 
   await recordMediaActivity({ userId, kind: "reading", minutes: 3, source: "telegram" });
+}
+
+/**
+ * Typed entry point: `/song Bad Bunny Tití me preguntó`.
+ *
+ * This runs a Deezer search before anything else, and that is the whole reason
+ * it exists rather than calling the lyrics providers directly. Both providers
+ * key on artist and title as *separate* fields, and a typed query arrives as
+ * one undifferentiated string with no reliable way to split it. Deezer has
+ * already done that split correctly, and supplies the duration LRCLIB matches
+ * on, so routing through it turns a guess into a lookup.
+ */
+async function sendSongSearch(chatId: number, userId: string, query: string): Promise<void> {
+  if (!query.trim()) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        "*Study a song*\n\n" +
+        "Send `/song <artist> <title>` — for example `/song Bad Bunny Tití me preguntó`.\n\n" +
+        "I'll tell you how much of it you can already follow, which words to learn first, " +
+        "and what grammar it runs on.",
+      keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+    });
+    return;
+  }
+
+  await telegram.sendMessage({ chatId, text: `Looking for *${escapeMarkdown(query)}*…` });
+  const tracks = await findTracks(query);
+
+  if (tracks.length === 0) {
+    await telegram.sendMessage({
+      chatId,
+      text: `Nothing found for *${escapeMarkdown(query)}*. Try adding the artist.`,
+    });
+    return;
+  }
+
+  // A single hit is unambiguous, so skip the pick-one step entirely.
+  if (tracks.length === 1) {
+    return sendSongStudy(chatId, userId, tracks[0]!.id);
+  }
+
+  await telegram.sendMessage({
+    chatId,
+    text: "Which one?",
+    keyboard: tracks.slice(0, 5).map((t) => [
+      {
+        text: `${t.title.slice(0, 26)} — ${t.artist.slice(0, 18)}`,
+        callback_data: `song:${t.id}`,
+      },
+    ]),
+  });
+}
+
+/**
+ * The study view for one song.
+ *
+ * Everything here is derived: counts, coverage, a vocabulary list, grammar
+ * notes. The lyric lines that produced it were read in `studySong` and
+ * dropped there, and no path through this function can print them — which is
+ * deliberate, since the providers behind them carry no licence to redistribute
+ * the publishers' text. The learner reads the words on Deezer, where they are
+ * licensed, and brings any line they cannot crack back via /explain.
+ */
+async function sendSongStudy(chatId: number, userId: string, trackId: number): Promise<void> {
+  await telegram.sendMessage({ chatId, text: "Reading the song…" });
+
+  const study = await studySong(userId, trackId);
+  if (!study) {
+    await telegram.sendMessage({ chatId, text: "Couldn't find that track." });
+    return;
+  }
+
+  const { track, analysis, gloss } = study;
+  const header = `🎵 *${escapeMarkdown(track.title)}*\n_${escapeMarkdown(track.artist)}_`;
+
+  if (analysis.totalWords === 0) {
+    await telegram.sendMessage({
+      chatId,
+      text: `${header}\n\n${escapeMarkdown(study.message ?? "Nothing to analyse.")}`,
+      keyboard: [[{ text: "🔗 Listen", url: track.externalUrl }]],
+    });
+    return;
+  }
+
+  const coverage = Math.round(analysis.coverage * 100);
+  const difficulty = { accessible: "easy to follow", moderate: "a stretch", hard: "hard" }[
+    analysis.difficulty
+  ];
+
+  // Pace is the figure learners find most surprising — a song can be built
+  // entirely from words they know and still be unfollowable at speed — so it
+  // is stated in words per second rather than hidden inside the grade.
+  const pace =
+    analysis.pace != null ? `${analysis.pace.toFixed(1)} words/sec — ${difficulty}` : difficulty;
+
+  const lines: string[] = [
+    header,
+    "",
+    `You already know *${coverage}%* of the words here.`,
+    `${analysis.distinctWords} distinct words · ${pace}`,
+  ];
+
+  if (analysis.repetition >= 0.3) {
+    lines.push(
+      `_${Math.round(analysis.repetition * 100)}% of the lines repeat — the chorus does your revision for you._`,
+    );
+  }
+
+  if (analysis.newWords.length > 0) {
+    lines.push("", "*Learn these first*");
+    for (const item of analysis.newWords.slice(0, 12)) {
+      const glossed = gloss?.words.find(
+        (w) => w.word.toLowerCase() === item.word.toLowerCase(),
+      );
+      const meaning = glossed ? ` — ${escapeMarkdown(glossed.meaning)}` : "";
+      const register = glossed?.register ? ` _(${escapeMarkdown(glossed.register)})_` : "";
+      const repeats = item.occurrences > 1 ? ` ×${item.occurrences}` : "";
+      lines.push(`• *${escapeMarkdown(item.word)}*${meaning}${register}${repeats}`);
+    }
+    if (analysis.newWords.length > 12) {
+      lines.push(`_…and ${analysis.newWords.length - 12} more._`);
+    }
+  }
+
+  // Contractions get their own section rather than joining the vocabulary
+  // list, because the instruction attached to them is the opposite one:
+  // recognise these by ear, never write them.
+  if (analysis.elisions.length > 0) {
+    lines.push("", "*Sung, not written*");
+    lines.push(
+      analysis.elisions
+        .slice(0, 8)
+        .map((e) => `${escapeMarkdown(e.word)} = ${escapeMarkdown(e.standard)}`)
+        .join(" · "),
+    );
+    lines.push("_Learn to hear these. Don't write them._");
+  }
+
+  if (gloss?.grammar.length) {
+    lines.push("", "*Grammar in this song*");
+    for (const point of gloss.grammar.slice(0, 3)) {
+      lines.push(`• *${escapeMarkdown(point.point)}* — ${escapeMarkdown(point.explanation)}`);
+    }
+  }
+
+  if (gloss?.register) {
+    lines.push("", `_${escapeMarkdown(gloss.register)}_`);
+  }
+
+  if (study.message) {
+    lines.push("", `_${escapeMarkdown(study.message)}_`);
+  }
+
+  lines.push("", "_Read the words on Deezer, then send me any line with_ `/explain <line>`.");
+
+  // The two follow-ups are what turn a readout into a lesson: practise the
+  // words now, and keep them so they come back when they are about to be
+  // forgotten. Both are offered only when there is glossed material behind
+  // them — a button that apologises when pressed is worse than no button.
+  const keepable = keepableWords(study);
+  const actions: InlineKeyboard = [];
+  if (keepable > 0) {
+    actions.push([
+      { text: "✍️ Quiz me on it", callback_data: `songq:${track.id}:0:0` },
+      { text: `➕ Keep ${keepable} words`, callback_data: `songadd:${track.id}` },
+    ]);
+  }
+
+  await telegram.sendMessage({
+    chatId,
+    text: lines.join("\n"),
+    keyboard: [
+      ...actions,
+      [{ text: "🔗 Listen on Deezer", url: track.externalUrl }],
+      [{ text: "🏠 Menu", callback_data: "menu" }],
+    ],
+  });
+}
+
+/**
+ * One question from the song's quiz.
+ *
+ * The running score travels in the callback data rather than in a session:
+ * five questions is a short enough run that carrying two small integers
+ * through the buttons is simpler, and correct, than keeping per-chat state
+ * that would have to be expired.
+ */
+async function sendSongQuestion(
+  chatId: number,
+  userId: string,
+  trackId: number,
+  index: number,
+  score: number,
+): Promise<void> {
+  if (index === 0) {
+    await telegram.sendMessage({ chatId, text: "Writing you some questions…" });
+  }
+
+  const { exercise, total } = await songExerciseAt(userId, trackId, index);
+
+  if (!exercise) {
+    if (total === 0) {
+      await telegram.sendMessage({
+        chatId,
+        text: "I couldn't put a quiz together for this one. The word list above still stands.",
+        keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+      });
+      return;
+    }
+    return finishSongQuiz(chatId, userId, trackId, score, total);
+  }
+
+  await telegram.sendMessage({
+    chatId,
+    text:
+      `*Question ${index + 1} of ${total}*\n\n` +
+      escapeMarkdown(exercise.prompt),
+    keyboard: exercise.options.map((option, optionIndex) => [
+      {
+        text: option.slice(0, 60),
+        callback_data: `songa:${trackId}:${index}:${optionIndex}:${score}`,
+      },
+    ]),
+  });
+}
+
+async function answerSongQuestion(
+  chatId: number,
+  userId: string,
+  trackId: number,
+  index: number,
+  choice: number,
+  score: number,
+): Promise<void> {
+  const { exercise, total } = await songExerciseAt(userId, trackId, index);
+  if (!exercise) return;
+
+  const correct = choice === exercise.correctIndex;
+  const next = score + (correct ? 1 : 0);
+
+  await telegram.sendMessage({
+    chatId,
+    text:
+      (correct
+        ? "✅ *Correcto*"
+        : `❌ Not quite — it's *${escapeMarkdown(exercise.options[exercise.correctIndex] ?? "")}*`) +
+      (exercise.explanation ? `\n\n_${escapeMarkdown(exercise.explanation)}_` : ""),
+    keyboard: [
+      [
+        index + 1 < total
+          ? { text: "➡️ Next question", callback_data: `songq:${trackId}:${index + 1}:${next}` }
+          : { text: "🏁 See how you did", callback_data: `songq:${trackId}:${total}:${next}` },
+      ],
+    ],
+  });
+}
+
+async function finishSongQuiz(
+  chatId: number,
+  userId: string,
+  trackId: number,
+  score: number,
+  total: number,
+): Promise<void> {
+  await recordSongQuiz(userId, score, total);
+
+  await telegram.sendMessage({
+    chatId,
+    text:
+      `*${score}/${total}*\n\n` +
+      (score === total
+        ? "Every one. That song is yours — go and listen to it again."
+        : score * 2 >= total
+          ? "Solid. Keep the words and they will come back before you forget them."
+          : "That song is ahead of you for now, which is exactly what the reviews are for."),
+    keyboard: [
+      [{ text: "➕ Keep the words", callback_data: `songadd:${trackId}` }],
+      [{ text: "🏠 Menu", callback_data: "menu" }],
+    ],
+  });
+}
+
+/** Move a song's new words into the learner's reviews. */
+async function keepSongWords(chatId: number, userId: string, trackId: number): Promise<void> {
+  await telegram.sendMessage({ chatId, text: "Building the cards…" });
+
+  const result = await saveSongWords(userId, trackId);
+
+  if (result.message) {
+    await telegram.sendMessage({ chatId, text: escapeMarkdown(result.message) });
+    return;
+  }
+
+  const lines: string[] = [];
+  if (result.added.length > 0) {
+    lines.push(`➕ *${result.added.length} words added to your reviews*`, "");
+    for (const word of result.added) {
+      lines.push(`• *${escapeMarkdown(word.spanish)}* — ${escapeMarkdown(word.english)}`);
+    }
+    lines.push("", "_They are due now, and they will show up in your reminders._");
+  }
+  if (result.already.length > 0) {
+    lines.push(
+      "",
+      `_Already in your reviews: ${escapeMarkdown(result.already.join(", "))}._`,
+    );
+  }
+
+  await telegram.sendMessage({
+    chatId,
+    text: lines.join("\n"),
+    keyboard: [
+      [{ text: "🔁 Review now", callback_data: "review" }],
+      [{ text: "🏠 Menu", callback_data: "menu" }],
+    ],
+  });
 }
 
 async function sendWatchList(chatId: number, userId: string): Promise<void> {
@@ -1245,6 +1582,8 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
       return sendScenarioPicker(chatId);
     case "media":
       return sendMedia(chatId, user.id, "");
+    case "songhelp":
+      return sendSongSearch(chatId, user.id, "");
     case "progress":
       return sendProgress(chatId, user.id);
     case "noop":
@@ -1296,6 +1635,25 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
 
     case "rate":
       return rateHook(chatId, user.id, args[0]!, args[1] === "1");
+
+    case "song":
+      return sendSongStudy(chatId, user.id, Number(args[0]));
+
+    case "songq":
+      return sendSongQuestion(chatId, user.id, Number(args[0]), Number(args[1]), Number(args[2]));
+
+    case "songa":
+      return answerSongQuestion(
+        chatId,
+        user.id,
+        Number(args[0]),
+        Number(args[1]),
+        Number(args[2]),
+        Number(args[3]),
+      );
+
+    case "songadd":
+      return keepSongWords(chatId, user.id, Number(args[0]));
 
     case "watch":
       return sendWatchList(chatId, user.id);

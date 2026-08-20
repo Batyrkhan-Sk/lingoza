@@ -33,16 +33,18 @@ export interface MusicQuery {
   requirePreview?: boolean;
 }
 
+interface DeezerTrack {
+  id?: number;
+  title?: string;
+  duration?: number;
+  preview?: string;
+  link?: string;
+  artist?: { name?: string };
+  album?: { title?: string; cover_medium?: string };
+}
+
 interface DeezerResponse {
-  data?: {
-    id?: number;
-    title?: string;
-    duration?: number;
-    preview?: string;
-    link?: string;
-    artist?: { name?: string };
-    album?: { title?: string; cover_medium?: string };
-  }[];
+  data?: DeezerTrack[];
   error?: { message?: string };
 }
 
@@ -81,16 +83,7 @@ export class DeezerSource implements ContentSource<MusicQuery, SourcedTrack> {
         // A track without a preview is not listening practice, just a link.
         .filter((track) => !requirePreview || Boolean(track.preview))
         .slice(0, limit)
-        .map<SourcedTrack>((track) => ({
-          id: track.id!,
-          title: track.title!,
-          artist: track.artist?.name ?? "Unknown",
-          album: track.album?.title ?? null,
-          coverUrl: track.album?.cover_medium ?? null,
-          previewUrl: track.preview ?? null,
-          durationSeconds: track.duration ?? 0,
-          externalUrl: track.link ?? `https://www.deezer.com/track/${track.id}`,
-        }));
+        .map<SourcedTrack>(toTrack);
 
       return { ...base, items };
     } catch (error) {
@@ -102,6 +95,42 @@ export class DeezerSource implements ContentSource<MusicQuery, SourcedTrack> {
       };
     }
   }
+
+  /**
+   * One track by its Deezer id.
+   *
+   * Needed because a chat callback carries an id, not a search string, and
+   * re-running the search to find the track the learner already tapped is both
+   * wasteful and unreliable — the ordering can shift between the message being
+   * sent and the button being pressed, which would silently study the wrong
+   * song.
+   */
+  async track(id: number): Promise<SourcedTrack | null> {
+    try {
+      const response = await fetchWithTimeout(`${API}/track/${id}`, this.options);
+      if (!response.ok) return null;
+
+      const payload = (await response.json()) as DeezerTrack & { error?: { message?: string } };
+      if (payload.error || !payload.id || !payload.title) return null;
+      return toTrack(payload);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Shared so the search and by-id routes cannot drift apart. */
+function toTrack(track: DeezerTrack): SourcedTrack {
+  return {
+    id: track.id!,
+    title: track.title!,
+    artist: track.artist?.name ?? "Unknown",
+    album: track.album?.title ?? null,
+    coverUrl: track.album?.cover_medium ?? null,
+    previewUrl: track.preview ?? null,
+    durationSeconds: track.duration ?? 0,
+    externalUrl: track.link ?? `https://www.deezer.com/track/${track.id}`,
+  };
 }
 
 /**

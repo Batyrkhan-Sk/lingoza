@@ -21,6 +21,10 @@ import {
   shouldOfferMnemonic,
   rankMnemonics,
   assessKeywordMnemonic,
+  analyseSong,
+  arrangeOptions,
+  detectElision,
+  parseLrc,
   parseReminderHours,
   scheduleFor,
   dueReminder,
@@ -640,5 +644,152 @@ describe("reminder wording", () => {
     assert.equal(shouldSend(done), true, "a live streak is worth a word");
     assert.equal(shouldSend({ ...done, studiedToday: false }), true);
     assert.equal(shouldSend({ ...base, slot: "micro" }), true, "the drill always has value");
+  });
+});
+
+
+describe("song analysis", () => {
+  // Invented lines throughout: the analyser only ever sees lines at runtime and
+  // never stores them, so the tests keep real lyrics out of the repository too.
+  const lines = [
+    "Yo canto una cancion muy bonita",
+    "Yo canto una cancion muy bonita",
+    "Ella baila toda la noche conmigo",
+  ];
+
+  test("coverage counts running words, not distinct ones", () => {
+    // "yo/canto/una/cancion/muy/bonita" appear twice each; a learner knowing
+    // them should score far above the distinct-word share.
+    const analysis = analyseSong({
+      lines,
+      knownWords: new Set(["yo", "canto", "una", "cancion", "muy", "bonita"]),
+    });
+    assert.ok(analysis.coverage > 0.7, `expected >0.7, got ${analysis.coverage}`);
+    assert.equal(analysis.totalWords, 18);
+  });
+
+  test("a repeated line is reported as repetition", () => {
+    const analysis = analyseSong({ lines, knownWords: new Set() });
+    assert.ok(Math.abs(analysis.repetition - 1 / 3) < 0.01);
+  });
+
+  test("unknown words come back most frequent first", () => {
+    // A clear winner rather than a tie: ties break alphabetically, which is an
+    // incidental detail and not the ordering this test is about.
+    const analysis = analyseSong({
+      lines: ["canto canto canto", "bailo bailo", "salto"],
+      knownWords: new Set(),
+    });
+    assert.deepEqual(
+      analysis.newWords.map((w) => w.word),
+      ["canto", "bailo", "salto"],
+    );
+    assert.equal(analysis.newWords[0]!.occurrences, 3);
+  });
+
+  test("pace is measured across the sung span, not the track length", () => {
+    // Two lines a second apart in a track padded to five minutes: the outro is
+    // silence and must not drag the pace down.
+    const analysis = analyseSong({
+      lines: ["uno dos tres", "cuatro cinco seis"],
+      timings: [10, 11],
+      durationSeconds: 300,
+      knownWords: new Set(),
+    });
+    assert.ok(analysis.pace! > 2, `expected >2 w/s, got ${analysis.pace}`);
+  });
+
+  test("pace is null without synced timings", () => {
+    assert.equal(analyseSong({ lines, knownWords: new Set() }).pace, null);
+  });
+});
+
+describe("elision detection", () => {
+  test("known contractions expand to their real form, not their stem", () => {
+    // The dropped-s rule would give "pas" here, which is why the table wins.
+    assert.equal(detectElision("pa'"), "para");
+    assert.equal(detectElision("to'"), "todo");
+    assert.equal(detectElision("na'"), "nada");
+  });
+
+  test("a trailing apostrophe otherwise restores a dropped final -s", () => {
+    assert.equal(detectElision("vamo'"), "vamos");
+    assert.equal(detectElision("tenemo'"), "tenemos");
+  });
+
+  test("a leading apostrophe restores the eaten es- syllable", () => {
+    assert.equal(detectElision("'toy"), "estoy");
+  });
+
+  test("typographic apostrophes are recognised, not just ASCII ones", () => {
+    // Sourced lyrics use U+2019 far more often than U+0027, and the difference
+    // is invisible on screen but total to a regex.
+    assert.equal(detectElision("vamo\u2019"), "vamos");
+  });
+
+  test("-ao and -ido contractions are recovered", () => {
+    assert.equal(detectElision("cansao"), "cansado");
+    assert.equal(detectElision("enamorao"), "enamorado");
+  });
+
+  test("ordinary words that merely look elided are never flagged", () => {
+    // The damaging failure: a flagged word is pulled out of both the coverage
+    // count and the study list, so a false positive silently stops a real word
+    // from ever being taught.
+    for (const word of ["frío", "mío", "río", "tío", "confío", "envío", "bacalao", "cacao"]) {
+      assert.equal(detectElision(word), null, `${word} should not be treated as elided`);
+    }
+  });
+
+  test("an elided form the learner knows still counts as covered", () => {
+    const analysis = analyseSong({
+      lines: ["vamo' a cantar"],
+      knownWords: new Set(["vamos", "cantar"]),
+    });
+    assert.ok(analysis.coverage > 0.6, `expected >0.6, got ${analysis.coverage}`);
+  });
+});
+
+describe("LRC parsing", () => {
+  test("a line repeated by several tags becomes several entries", () => {
+    // Choruses are stored once with one tag per repetition; counting the line
+    // only once would undercount the most-repeated words in the song.
+    const { lines, timings } = parseLrc("[00:10.00][01:20.50]el coro\n[00:15.00]un verso");
+    assert.deepEqual(lines, ["el coro", "un verso", "el coro"]);
+    assert.deepEqual(timings, [10, 15, 80.5]);
+  });
+
+  test("metadata-only lines are skipped", () => {
+    assert.deepEqual(parseLrc("[ar:Alguien]\n[00:05.00]la letra").lines, ["la letra"]);
+  });
+});
+
+
+describe("song exercise options", () => {
+  const options = ["cantar", "bailar", "saltar"];
+
+  test("the answer moves off the position the model gave it", () => {
+    // Models put the correct option first far more often than chance; a
+    // learner spots that within three questions and stops reading them.
+    const first = arrangeOptions(options, "cantar", 0)!;
+    const second = arrangeOptions(options, "cantar", 1)!;
+    assert.notEqual(first.correctIndex, second.correctIndex);
+  });
+
+  test("the marked index always points at the answer", () => {
+    for (let rotation = 0; rotation < 7; rotation += 1) {
+      const arranged = arrangeOptions(options, "bailar", rotation)!;
+      assert.equal(arranged.options[arranged.correctIndex], "bailar");
+      assert.equal(arranged.options.length, 3);
+    }
+  });
+
+  test("a question whose answer is not among its options is dropped", () => {
+    // Silently keeping it would mark every learner wrong on that question.
+    assert.equal(arrangeOptions(options, "correr", 0), null);
+  });
+
+  test("the answer is matched case-insensitively and untrimmed", () => {
+    assert.ok(arrangeOptions(options, " Cantar ", 0));
   });
 });

@@ -212,6 +212,7 @@ export class TelegramClient {
         { command: "explain", description: "Break down a line of Spanish" },
         { command: "say", description: "Hear how something is pronounced" },
         { command: "media", description: "Real Spanish: films, music, articles" },
+        { command: "song", description: "Break down a song you want to understand" },
         { command: "watch", description: "Films and cartoons in Spanish" },
         { command: "podcast", description: "Spanish podcasts to listen to" },
         { command: "speak", description: "Conversation with your AI tutor" },

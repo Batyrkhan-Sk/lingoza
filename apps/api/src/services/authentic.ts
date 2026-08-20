@@ -18,10 +18,13 @@ import { recordActivity } from "./progress.js";
  * and public-domain books — always attributed, always linking back to the
  * rights-holder.
  *
- * Lyrics and subtitles are deliberately absent: they are licensed works, and no
- * free route to them exists. `explainSpanishLine` covers the same ground from
- * the other direction — the learner reads them where they are licensed and
- * pastes a line here for the breakdown, which needs no licence at all.
+ * Lyrics and subtitles are never reproduced: they are licensed works, and the
+ * free routes to them (LRCLIB, lyrics.ovh) carry no distribution licence — the
+ * text is available, permission is not. Two things cover the same ground
+ * without republishing anything. `studySong` reads a song's lyrics to derive
+ * facts about it — coverage, vocabulary, grammar, pace — and discards the text.
+ * `explainSpanishLine` works from the other direction, analysing a line the
+ * learner supplies, which needs no licence at all.
  */
 
 export const media = new MediaSources({
@@ -44,7 +47,9 @@ export async function getMediaOverview(userId: string) {
     /** Set out plainly so the constraint is visible rather than mysterious. */
     notice:
       "Lyrics and subtitles are copyrighted, so they are not reproduced here. " +
-      "You get the real audio, real Spanish articles about the work, and a link to the original.",
+      "For songs you get a full breakdown of what is in them — how much you already " +
+      "know, the words to learn first, the grammar they run on — plus the real audio " +
+      "and a link to read the words at the source.",
   };
 }
 

@@ -177,6 +177,18 @@ export function splitSentences(text: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Fold typographic apostrophes onto the ASCII one.
+ *
+ * Sourced Spanish arrives with U+2019 far more often than with U+0027, and the
+ * difference is invisible on screen but total to a regex. It matters most for
+ * elided speech, where the apostrophe *is* the signal: "pa'" tokenises as one
+ * word with an ASCII apostrophe and as the bare "pa" with a curly one.
+ */
+export function normalizeApostrophes(input: string): string {
+  return input.replace(/[\u2019\u02BC\u2018\u00B4]/g, "'");
+}
+
 /** Tokenise into clickable words, preserving the original for lookup. */
 export function tokenizeWords(text: string): string[] {
   return text.match(/[\p{L}\p{M}'-]+/gu) ?? [];
