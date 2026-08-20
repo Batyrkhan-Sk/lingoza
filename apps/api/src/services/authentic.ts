@@ -49,7 +49,8 @@ export async function getMediaOverview(userId: string) {
       "Lyrics and subtitles are copyrighted, so they are not reproduced here. " +
       "For songs you get a full breakdown of what is in them — how much you already " +
       "know, the words to learn first, the grammar they run on — plus the real audio " +
-      "and a link to read the words at the source.",
+      "and a link to read the words at the source. Paste those words back and they " +
+      "are read line by line, meaning under each line.",
   };
 }
 

@@ -4,7 +4,12 @@ import { DeezerSource, SUGGESTED_ARTISTS, type MusicQuery } from "./deezer.js";
 import { TmdbSource, SUGGESTED_WATCHING, type FilmQuery } from "./tmdb.js";
 import { GutenbergSource, type BookQuery } from "./gutenberg.js";
 import { PodcastSource, type PodcastQuery, type PodcastShow } from "./podcasts.js";
-import { LyricsSource, type LyricsAnalysisInput, type LyricsQuery } from "./lyrics.js";
+import {
+  LyricsSource,
+  type LicensedLyricsProvider,
+  type LyricsAnalysisInput,
+  type LyricsQuery,
+} from "./lyrics.js";
 import type {
   SourcedBook,
   SourcedEncyclopediaEntry,
@@ -38,6 +43,14 @@ export interface MediaOptions {
   enabled?: boolean;
   /** How long fetched media stays fresh. */
   ttlMs?: number;
+  /**
+   * Lyrics providers that carry display rights, if you have licensed one.
+   *
+   * Without these, lyrics are fetched for analysis and never shown — see
+   * {@link LicensedLyricsProvider}. Supplying one is the only way the app will
+   * print a lyric line, and it is a statement that you may.
+   */
+  licensedLyricsProviders?: LicensedLyricsProvider[];
 }
 
 interface CacheEntry {
@@ -61,7 +74,7 @@ export class MediaSources {
     this.tmdb = new TmdbSource(options.tmdbApiKey ?? "", fetchOptions);
     this.gutenberg = new GutenbergSource(fetchOptions);
     this.podcasts = new PodcastSource(fetchOptions);
-    this.lyrics = new LyricsSource(fetchOptions);
+    this.lyrics = new LyricsSource(fetchOptions, options.licensedLyricsProviders ?? []);
   }
 
   get enabled(): boolean {
@@ -112,6 +125,11 @@ export class MediaSources {
     return this.cached(`music:${query.search}:${query.limit ?? 10}`, () =>
       this.deezer.fetch(query),
     );
+  }
+
+  /** True when a lyrics provider with display rights is configured. */
+  get lyricsDisplayable(): boolean {
+    return this.lyrics.canDisplay;
   }
 
   /** One track by id — what a chat callback or a saved reference carries. */

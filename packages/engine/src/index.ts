@@ -31,4 +31,5 @@ export * from "./ai/lookup.js";
 export * from "./ai/mnemonics.js";
 export * from "./ai/tts.js";
 export * from "./ai/explain.js";
+export * from "./ai/passage.js";
 export * from "./ai/song.js";

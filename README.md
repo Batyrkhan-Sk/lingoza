@@ -39,6 +39,7 @@ Open <http://localhost:5173> and create an account. Everything works without any
 | Grammar, incl. ser/estar, por/para… | `packages/content/src/grammar/` |
 | Listening, reading, click-to-translate | `apps/api/src/services/media.ts` |
 | Songs: coverage, vocabulary, grammar, quiz | `apps/api/src/services/songs.ts` |
+| Line-by-line reading of pasted Spanish | `apps/api/src/services/breakdown.ts` |
 | Speaking evaluation | `packages/engine/src/ai/speaking.ts` |
 | AI tutor | `packages/engine/src/ai/tutor.ts` |
 | Writing evaluation | `packages/engine/src/ai/writing.ts` |

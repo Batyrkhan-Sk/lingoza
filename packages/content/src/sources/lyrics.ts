@@ -22,7 +22,39 @@ import { fetchWithTimeout, type FetchOptions } from "./types.js";
  * Hence {@link LyricsAnalysisInput} is deliberately not exported from the
  * package index, is never persisted, and is never returned from a route. The
  * only thing allowed to cross that boundary is the derived summary.
+ *
+ * The one exception is a provider that actually holds display rights. If one
+ * is supplied — an aggregator you have licensed, or your own catalogue — it is
+ * tried first and its result is marked {@link LyricsAnalysisInput.displayable},
+ * which is the single flag that lets an interface print the lines. Nothing
+ * else in this file can set it. That is deliberate: whether text may be shown
+ * is a fact about its provenance, so it travels with the text rather than
+ * being decided again, differently, by each screen that renders it.
  */
+
+/**
+ * A lyrics source that carries the right to display what it returns.
+ *
+ * Implement this against whatever your licence is with — Musixmatch, LyricFind,
+ * a publisher's own feed — and pass it to {@link LyricsSource}. The display
+ * path in the app lights up on the flag, so no renderer needs changing.
+ *
+ * Two obligations come with implementing it, and they are yours rather than
+ * this file's: `attribution` must be whatever your agreement requires shown
+ * alongside the words, and you must not return more of a work than the
+ * agreement allows — many licences cover an excerpt rather than a full lyric.
+ */
+export interface LicensedLyricsProvider {
+  readonly name: string;
+  /** Shown wherever the lines are, as the licence requires. */
+  readonly attribution: string;
+  fetch(query: LyricsQuery): Promise<{
+    lines: string[];
+    timings?: number[] | null;
+    durationSeconds?: number | null;
+    instrumental?: boolean;
+  } | null>;
+}
 
 /**
  * Raw lyric text, in memory, on its way to an analyser.
@@ -37,9 +69,20 @@ export interface LyricsAnalysisInput {
   timings: number[] | null;
   /** Track duration in seconds, when known — drives the words-per-second read. */
   durationSeconds: number | null;
-  provider: "lrclib" | "lyrics.ovh";
+  provider: string;
   /** True when the provider marked the track as having no lyrics at all. */
   instrumental: boolean;
+  /**
+   * Whether these lines may be shown to a learner.
+   *
+   * False for every unlicensed provider, which is both of the built-in ones.
+   * Only a {@link LicensedLyricsProvider} sets it true, and an interface that
+   * prints lines must check it — the analysis path ignores it, because
+   * deriving facts is allowed either way.
+   */
+  displayable: boolean;
+  /** Credit line the licence requires, when displaying is permitted. */
+  attribution: string | null;
 }
 
 export interface LyricsQuery {
@@ -82,11 +125,64 @@ export class LyricsSource {
    */
   readonly licence = "UNLICENSED-ANALYSIS-ONLY";
 
-  constructor(private readonly options: FetchOptions = {}) {}
+  constructor(
+    private readonly options: FetchOptions = {},
+    /**
+     * Providers that may be displayed, tried before the analysis-only pair.
+     * Empty by default: the app ships with no display licence.
+     */
+    private readonly licensed: LicensedLyricsProvider[] = [],
+  ) {}
 
-  /** Resolve lyrics for analysis. Returns null when neither provider has the track. */
+  /** True when at least one provider may show its lines to a learner. */
+  get canDisplay(): boolean {
+    return this.licensed.length > 0;
+  }
+
+  /** Resolve lyrics. Returns null when no provider has the track. */
   async fetch(query: LyricsQuery): Promise<LyricsAnalysisInput | null> {
-    return (await this.fromLrclib(query)) ?? (await this.fromLyricsOvh(query));
+    return (
+      (await this.fromLicensed(query)) ??
+      (await this.fromLrclib(query)) ??
+      (await this.fromLyricsOvh(query))
+    );
+  }
+
+  /**
+   * The licensed route, first because it is the only one whose result can be
+   * read by the learner rather than merely measured.
+   *
+   * A failing licensed provider falls through to the analysis-only pair rather
+   * than failing the request: a learner still gets the breakdown, just not the
+   * words. Losing the whole feature because an aggregator was down would be a
+   * worse trade.
+   */
+  private async fromLicensed(query: LyricsQuery): Promise<LyricsAnalysisInput | null> {
+    for (const provider of this.licensed) {
+      try {
+        const result = await provider.fetch(query);
+        if (!result) continue;
+
+        const lines = result.lines.map((line) => line.trim()).filter(Boolean);
+        if (lines.length === 0 && !result.instrumental) continue;
+
+        return {
+          lines,
+          timings: result.timings ?? null,
+          durationSeconds: result.durationSeconds ?? query.durationSeconds ?? null,
+          provider: provider.name,
+          instrumental: result.instrumental ?? false,
+          displayable: true,
+          attribution: provider.attribution,
+        };
+      } catch (error) {
+        console.warn(
+          `[lyrics] licensed provider ${provider.name} failed:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    return null;
   }
 
   private async fromLrclib(query: LyricsQuery): Promise<LyricsAnalysisInput | null> {
@@ -100,6 +196,8 @@ export class LyricsSource {
         durationSeconds: track.duration ?? query.durationSeconds ?? null,
         provider: "lrclib",
         instrumental: true,
+        displayable: false,
+        attribution: null,
       };
     }
 
@@ -113,6 +211,8 @@ export class LyricsSource {
         durationSeconds: track.duration ?? query.durationSeconds ?? null,
         provider: "lrclib",
         instrumental: false,
+        displayable: false,
+        attribution: null,
       };
     }
 
@@ -124,6 +224,8 @@ export class LyricsSource {
       durationSeconds: track.duration ?? query.durationSeconds ?? null,
       provider: "lrclib",
       instrumental: false,
+      displayable: false,
+      attribution: null,
     };
   }
 
@@ -188,6 +290,8 @@ export class LyricsSource {
         durationSeconds: query.durationSeconds ?? null,
         provider: "lyrics.ovh",
         instrumental: false,
+        displayable: false,
+        attribution: null,
       };
     } catch {
       return null;

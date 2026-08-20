@@ -18,6 +18,7 @@ import {
 import { ai } from "./ai.js";
 import { media, recordMediaActivity } from "./authentic.js";
 import { recordActivity, refreshDerivedCounters } from "./progress.js";
+import { startBreakdown, type BreakdownPage } from "./breakdown.js";
 import { prisma } from "../db.js";
 
 /**
@@ -62,6 +63,18 @@ export interface SongStudy {
   };
   /** AI glosses for the new words, when a provider is configured. */
   gloss: SongGloss | null;
+  /**
+   * The lyric lines — present **only** when the provider that supplied them
+   * carries display rights, which the built-in pair does not.
+   *
+   * Null is the normal case and is not a degraded one: everything above is
+   * derived from the lines whether or not they may be shown. When it is
+   * populated, the same line-by-line reader the learner gets for text they
+   * paste runs on these instead.
+   */
+  lines: string[] | null;
+  /** Credit the licence requires wherever {@link lines} is shown. */
+  attribution: string | null;
   /** Set when the analysis could not run, in the learner's words. */
   message: string | null;
 }
@@ -140,7 +153,7 @@ export async function studySong(
   const progress = await prisma.userProgress.findUnique({ where: { userId } });
   const level = parseLevel(progress?.currentLevelCode);
 
-  const base: Omit<SongStudy, "analysis" | "gloss" | "message"> = {
+  const base: Omit<SongStudy, "analysis" | "gloss" | "lines" | "attribution" | "message"> = {
     track: {
       id: track.id,
       title: track.title,
@@ -168,6 +181,8 @@ export async function studySong(
         difficulty: "moderate",
       },
       gloss: null,
+      lines: null,
+      attribution: null,
       message,
     });
 
@@ -223,6 +238,11 @@ export async function studySong(
     ...base,
     analysis: { ...analysis, newWords: glossTargets, elisions },
     gloss,
+    // The only branch in the app that lets a lyric line survive the function
+    // that fetched it, and it is reachable only through a provider that says
+    // it may. Everything else here is derived and travels freely.
+    lines: lyrics.displayable ? lyrics.lines : null,
+    attribution: lyrics.displayable ? lyrics.attribution : null,
     message: ai.enabled
       ? null
       : "Word meanings need an AI provider. Add GEMINI_API_KEY to enable them — " +
@@ -476,4 +496,26 @@ async function refresh(userId: string, trackId: number): Promise<CacheEntry | nu
   const study = await studySong(userId, trackId);
   if (!study) return null;
   return readCache(userId, trackId);
+}
+
+/**
+ * Read a song line by line, when the lines may be shown.
+ *
+ * Hands the fetched lyric to the same walkthrough the learner gets for text
+ * they paste, so there is one reader rather than two. Returns null when the
+ * song's provider carries no display rights — which is the default, and the
+ * case the caller must handle by pointing the learner at the words where they
+ * are licensed.
+ */
+export async function startSongBreakdown(
+  userId: string,
+  trackId: number,
+): Promise<BreakdownPage | null> {
+  const entry = readCache(userId, trackId) ?? (await refresh(userId, trackId));
+  const study = entry?.study;
+  if (!study?.lines?.length) return null;
+
+  return startBreakdown(userId, study.lines.join("\n"), {
+    context: `From the song "${study.track.title}" by ${study.track.artist}.`,
+  });
 }

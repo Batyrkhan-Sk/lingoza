@@ -21,10 +21,12 @@ import {
   shouldOfferMnemonic,
   rankMnemonics,
   assessKeywordMnemonic,
+  alignPassage,
   analyseSong,
   arrangeOptions,
   detectElision,
   parseLrc,
+  splitPassageLines,
   parseReminderHours,
   scheduleFor,
   dueReminder,
@@ -791,5 +793,69 @@ describe("song exercise options", () => {
 
   test("the answer is matched case-insensitively and untrimmed", () => {
     assert.ok(arrangeOptions(options, " Cantar ", 0));
+  });
+});
+
+
+describe("passage splitting", () => {
+  test("section markers and blank lines are dropped, content is kept", () => {
+    const lines = splitPassageLines(
+      "[Verso 1]\n\nYo canto\n\n[Estribillo: alguien]\nElla baila\n(Instrumental)\n",
+    );
+    assert.deepEqual(lines, ["Yo canto", "Ella baila"]);
+  });
+
+  test("a bracketed aside inside a line survives — only whole-line brackets go", () => {
+    const lines = splitPassageLines("Yo canto (y tú bailas)\nElla [se] va");
+    assert.equal(lines.length, 2);
+  });
+
+  test("LRC timestamps are stripped from pasted synced lyrics", () => {
+    assert.deepEqual(splitPassageLines("[00:12.34]Yo canto"), ["Yo canto"]);
+  });
+
+  test("the line cap bounds what one paste can cost", () => {
+    const long = Array.from({ length: 500 }, (_, i) => `Línea ${i}`).join("\n");
+    assert.equal(splitPassageLines(long, 200).length, 200);
+  });
+});
+
+describe("passage alignment", () => {
+  const lines = ["uno", "dos", "tres"];
+
+  test("explanations land on the line they are numbered for", () => {
+    const aligned = alignPassage(lines, [
+      { index: 2, translation: "three" },
+      { index: 0, translation: "one" },
+    ]);
+    assert.equal(aligned[0]!.translation, "one");
+    assert.equal(aligned[2]!.translation, "three");
+  });
+
+  test("a line the model skipped is shown untranslated, not shifted", () => {
+    // The failure this prevents: every line confidently explained as its
+    // neighbour, which reads as correct and teaches the wrong thing.
+    const aligned = alignPassage(lines, [
+      { index: 0, translation: "one" },
+      { index: 2, translation: "three" },
+    ]);
+    assert.equal(aligned[1]!.translation, "");
+    assert.equal(aligned[1]!.original, "dos");
+  });
+
+  test("unnumbered entries fill the gaps in order", () => {
+    const aligned = alignPassage(lines, [{ translation: "one" }, { translation: "two" }]);
+    assert.equal(aligned[0]!.translation, "one");
+    assert.equal(aligned[1]!.translation, "two");
+  });
+
+  test("an out-of-range index does not throw away the explanation", () => {
+    const aligned = alignPassage(lines, [{ index: 99, translation: "one" }]);
+    assert.equal(aligned[0]!.translation, "one");
+  });
+
+  test("every line comes back, in order, whatever the model returned", () => {
+    const aligned = alignPassage(lines, []);
+    assert.deepEqual(aligned.map((line) => line.original), lines);
   });
 });

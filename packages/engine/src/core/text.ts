@@ -197,3 +197,31 @@ export function tokenizeWords(text: string): string[] {
 export function countWords(text: string): number {
   return tokenizeWords(text).length;
 }
+
+/**
+ * Split a pasted passage into the lines to walk through.
+ *
+ * Written for lyrics as they are copied off a lyrics page, which is where the
+ * awkward cases come from: blank lines between verses, section markers in
+ * brackets, and the occasional stray timestamp from a synced file. Those are
+ * navigation furniture rather than Spanish, and explaining "[Estribillo]" as
+ * though it were a line wastes a call and reads as if the tutor is not paying
+ * attention.
+ *
+ * A bracketed line is only dropped when the brackets are the *whole* line —
+ * an aside inside a lyric is part of the lyric.
+ */
+export function splitPassageLines(text: string, limit = 200): string[] {
+  const lines: string[] = [];
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]/g, "").trim();
+    if (!line) continue;
+    // [Verse 2], [Chorus: Bad Bunny], (Instrumental) — furniture, not language.
+    if (/^[[(][^\])]*[\])]$/.test(line)) continue;
+    lines.push(line);
+    if (lines.length >= limit) break;
+  }
+
+  return lines;
+}

@@ -17,12 +17,14 @@ import { sendConversationMessage, startConversation } from "../services/practice
 import { getSpeech, synthesisAvailable } from "../services/speech.js";
 import { realUsageForWord } from "../services/media.js";
 import { explainSpanishLine } from "../services/authentic.js";
+import { nextBreakdownPage, startBreakdown, type BreakdownPage } from "../services/breakdown.js";
 import {
   findTracks,
   keepableWords,
   recordSongQuiz,
   saveSongWords,
   songExerciseAt,
+  startSongBreakdown,
   studySong,
 } from "../services/songs.js";
 import {
@@ -174,8 +176,12 @@ async function handleMessage(message: NonNullable<TelegramUpdate["message"]>): P
     case "/media":
       return sendMedia(chat.id, user.id, args.join(" "));
     case "/song":
-    case "/lyrics":
       return sendSongSearch(chat.id, user.id, args.join(" "));
+    case "/lyrics":
+    case "/breakdown":
+      // Newlines matter here — the passage is the argument — so the raw text
+      // after the command is used rather than the whitespace-split args.
+      return sendBreakdown(chat.id, user.id, text.trim().slice(command.length).trim());
     case "/watch":
       return sendWatchList(chat.id, user.id);
     case "/podcast":
@@ -206,6 +212,14 @@ async function handleFreeText(chatId: number, userId: string, text: string): Pro
   });
 
   if (!conversation) {
+    // Several lines pasted at a tutor, with no conversation open, has exactly
+    // one sensible reading: "help me read this". Guessing wrong costs the
+    // learner a message; refusing to guess costs them the feature, since
+    // nobody discovers a command by pasting.
+    if (text.trim().split(/\r?\n/).filter((line) => line.trim()).length > 1) {
+      return sendBreakdown(chatId, userId, text);
+    }
+
     await telegram.sendMessage({
       chatId,
       text: "I didn't catch that. Use the buttons below, or /daily for today's session.",
@@ -774,14 +788,30 @@ async function sendSongStudy(chatId: number, userId: string, trackId: number): P
     lines.push("", `_${escapeMarkdown(study.message)}_`);
   }
 
-  lines.push("", "_Read the words on Deezer, then send me any line with_ `/explain <line>`.");
+  // Where the words themselves come from depends on the provider that found
+  // them. With a licensed one they can be read here; without, the learner
+  // reads them where they are licensed and pastes them back — which is not a
+  // fallback so much as the normal path, and works on any song ever released.
+  if (study.lines?.length) {
+    lines.push("", "_Read it line by line below._");
+    if (study.attribution) lines.push(`_${escapeMarkdown(study.attribution)}_`);
+  } else {
+    lines.push(
+      "",
+      "_Open the words on Deezer and paste them back to me — I'll go through them " +
+        "line by line, with the meaning under each one._",
+    );
+  }
 
-  // The two follow-ups are what turn a readout into a lesson: practise the
-  // words now, and keep them so they come back when they are about to be
-  // forgotten. Both are offered only when there is glossed material behind
-  // them — a button that apologises when pressed is worse than no button.
+  // The follow-ups are what turn a readout into a lesson: read it, practise
+  // the words, keep them so they come back before they are forgotten. Each is
+  // offered only when there is something behind it — a button that apologises
+  // when pressed is worse than no button.
   const keepable = keepableWords(study);
   const actions: InlineKeyboard = [];
+  if (study.lines?.length) {
+    actions.push([{ text: "📝 Read it line by line", callback_data: `songread:${track.id}` }]);
+  }
   if (keepable > 0) {
     actions.push([
       { text: "✍️ Quiz me on it", callback_data: `songq:${track.id}:0:0` },
@@ -937,6 +967,144 @@ async function keepSongWords(chatId: number, userId: string, trackId: number): P
       [{ text: "🏠 Menu", callback_data: "menu" }],
     ],
   });
+}
+
+/**
+ * Line by line through a passage the learner pasted.
+ *
+ * The layout is the point: the line as it stands, what it means underneath,
+ * and only the words that would have stopped them. A song read this way is a
+ * lesson; the same song reduced to a word list is a glossary, which is what
+ * the learner could have got from a dictionary.
+ *
+ * The words come from the learner — they are reading them on the platform
+ * that licensed them and pasting them here — so this works on any song ever
+ * released, which is more than any lyrics API can say.
+ */
+async function sendBreakdown(
+  chatId: number,
+  userId: string,
+  passage: string,
+  context?: string,
+): Promise<void> {
+  if (!passage.trim()) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        "*Read something line by line*\n\n" +
+        "Paste the words — a verse, a whole song, a scene of dialogue — and I'll go " +
+        "through them a line at a time: what each line means, and the words worth " +
+        "stopping on.\n\n" +
+        "You can paste straight into the chat, with or without `/lyrics` in front.",
+      keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+    });
+    return;
+  }
+
+  await telegram.sendMessage({ chatId, text: "Reading it line by line…" });
+  await renderBreakdownPage(chatId, await startBreakdown(userId, passage, { context }));
+}
+
+async function sendBreakdownPage(chatId: number, userId: string): Promise<void> {
+  await renderBreakdownPage(chatId, await nextBreakdownPage(userId));
+}
+
+/**
+ * Read a fetched song line by line.
+ *
+ * Only reachable when the provider that supplied the lyric carries display
+ * rights; the button that leads here is not drawn otherwise. The null branch
+ * is still handled, because a cache entry can expire between the message being
+ * drawn and the button being pressed and be rebuilt from a different provider.
+ */
+async function sendSongReading(chatId: number, userId: string, trackId: number): Promise<void> {
+  await telegram.sendMessage({ chatId, text: "Reading it line by line…" });
+
+  const page = await startSongBreakdown(userId, trackId);
+  if (!page) {
+    await telegram.sendMessage({
+      chatId,
+      text:
+        "I can't show the words for this one — the source I have them from is not " +
+        "licensed to reproduce them. Open them on Deezer and paste them back to me, " +
+        "and I'll take you through line by line.",
+      keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+    });
+    return;
+  }
+
+  await renderBreakdownPage(chatId, page);
+}
+
+/** Telegram rejects anything over 4096 characters; leave room for the markup. */
+const MESSAGE_BUDGET = 3500;
+
+async function renderBreakdownPage(chatId: number, page: BreakdownPage): Promise<void> {
+  if (page.message) {
+    await telegram.sendMessage({
+      chatId,
+      text: escapeMarkdown(page.message),
+      keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+    });
+    return;
+  }
+
+  if (page.lines.length === 0) {
+    await telegram.sendMessage({
+      chatId,
+      text: "That's the whole passage. 🎉",
+      keyboard: [
+        [{ text: "🔁 Review words", callback_data: "review" }],
+        [{ text: "🏠 Menu", callback_data: "menu" }],
+      ],
+    });
+    return;
+  }
+
+  const blocks: string[] = [`*Lines ${page.from}–${page.to} of ${page.total}*`];
+
+  for (const line of page.lines) {
+    const block = [`🇪🇸 *${escapeMarkdown(line.original)}*`];
+    if (line.translation) block.push(`🇬🇧 ${escapeMarkdown(line.translation)}`);
+    for (const word of line.words) {
+      const note = word.note ? ` _(${escapeMarkdown(word.note)})_` : "";
+      block.push(`  • ${escapeMarkdown(word.surface)} — ${escapeMarkdown(word.meaning)}${note}`);
+    }
+    if (line.note) block.push(`  _${escapeMarkdown(line.note)}_`);
+    blocks.push(block.join("\n"));
+  }
+
+  // Packed into as few messages as fit rather than one per line: a chat that
+  // arrives as twenty notifications is unreadable on a phone.
+  const messages: string[] = [];
+  let current = "";
+  for (const block of blocks) {
+    if (current && current.length + block.length + 2 > MESSAGE_BUDGET) {
+      messages.push(current);
+      current = block;
+    } else {
+      current = current ? `${current}\n\n${block}` : block;
+    }
+  }
+  if (current) messages.push(current);
+
+  for (const [index, text] of messages.entries()) {
+    const last = index === messages.length - 1;
+    await telegram.sendMessage({
+      chatId,
+      text,
+      // The keyboard rides on the final message so the button sits at the
+      // bottom of the passage, where the reader has just arrived.
+      keyboard: last
+        ? page.done
+          ? [
+              [{ text: "🔁 Review words", callback_data: "review" }],
+              [{ text: "🏠 Menu", callback_data: "menu" }],
+            ]
+          : [[{ text: `➡️ Next lines (${page.total - page.to} to go)`, callback_data: "brk" }]]
+        : undefined,
+    });
+  }
 }
 
 async function sendWatchList(chatId: number, userId: string): Promise<void> {
@@ -1654,6 +1822,12 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
 
     case "songadd":
       return keepSongWords(chatId, user.id, Number(args[0]));
+
+    case "brk":
+      return sendBreakdownPage(chatId, user.id);
+
+    case "songread":
+      return sendSongReading(chatId, user.id, Number(args[0]));
 
     case "watch":
       return sendWatchList(chatId, user.id);
