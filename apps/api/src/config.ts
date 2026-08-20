@@ -66,6 +66,28 @@ export const config = {
      * report themselves unavailable and every other media source still works.
      */
     tmdbApiKey: process.env.TMDB_API_KEY ?? "",
+
+    /**
+     * Lyrics display, off unless the operator holds a licence and says so.
+     *
+     * Set LYRICS_DISPLAY_ATTRIBUTION to the credit line your agreement
+     * requires; its presence is the declaration that you hold display rights
+     * for the lyrics this deployment shows. Unset — the default, and what an
+     * unmodified clone of this repository does — means lyrics are read for
+     * analysis and never printed.
+     *
+     * The credit line is the switch on purpose. An operator who has not
+     * worked out what attribution their licence requires has not established
+     * that they have one, and a boolean would let them skip that step.
+     */
+    lyricsDisplayAttribution: process.env.LYRICS_DISPLAY_ATTRIBUTION?.trim() ?? "",
+    /**
+     * Lines of one lyric that may be shown, for licences covering an excerpt
+     * rather than a whole work. Unset means the licence covers the work.
+     */
+    lyricsDisplayMaxLines: process.env.LYRICS_DISPLAY_MAX_LINES
+      ? Math.max(1, Number(process.env.LYRICS_DISPLAY_MAX_LINES))
+      : null,
   },
 
   /**

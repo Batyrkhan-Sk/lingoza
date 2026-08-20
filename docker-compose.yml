@@ -52,6 +52,10 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
       TMDB_API_KEY: ${TMDB_API_KEY:-}
+      # Lyrics display. Unset means lyrics are read for analysis and never
+      # shown — see DEPLOYMENT.md before setting these.
+      LYRICS_DISPLAY_ATTRIBUTION: ${LYRICS_DISPLAY_ATTRIBUTION:-}
+      LYRICS_DISPLAY_MAX_LINES: ${LYRICS_DISPLAY_MAX_LINES:-}
       SEED_ON_START: ${SEED_ON_START:-true}
       # Daily study reminders. The API runs the sweep itself; set REMINDERS=off
       # only if an external scheduler calls `npm run reminders:run` instead.

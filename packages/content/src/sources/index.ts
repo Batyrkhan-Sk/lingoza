@@ -13,7 +13,12 @@ export { GutenbergSource, type BookQuery } from "./gutenberg.js";
 export { PodcastSource, type PodcastQuery, type PodcastShow } from "./podcasts.js";
 export { MediaSources, type MediaOptions } from "./media.js";
 export { PronunciationSource, type NativeRecording } from "./pronunciation.js";
-export { LyricsSource, type LyricsQuery, type LicensedLyricsProvider } from "./lyrics.js";
+export {
+  LyricsSource,
+  type DisplayLicence,
+  type LicensedLyricsProvider,
+  type LyricsQuery,
+} from "./lyrics.js";
 export { UsageSource, type UsageExample, type UsageResult, type UsageRegister } from "./usage.js";
 
 /**

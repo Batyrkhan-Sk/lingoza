@@ -23,14 +23,39 @@ import { fetchWithTimeout, type FetchOptions } from "./types.js";
  * package index, is never persisted, and is never returned from a route. The
  * only thing allowed to cross that boundary is the derived summary.
  *
- * The one exception is a provider that actually holds display rights. If one
- * is supplied — an aggregator you have licensed, or your own catalogue — it is
- * tried first and its result is marked {@link LyricsAnalysisInput.displayable},
- * which is the single flag that lets an interface print the lines. Nothing
- * else in this file can set it. That is deliberate: whether text may be shown
+ * Two things lift that restriction, and both require the operator to say so
+ * explicitly. A {@link LicensedLyricsProvider} is a source that carries its
+ * own display rights and is tried first. A {@link DisplayLicence} is the
+ * operator declaring that *they* hold rights covering this catalogue — which
+ * is a real situation, because a licence to display lyrics is granted by the
+ * rightsholder and is not a property of the API the text was read from.
+ *
+ * Either way the outcome is one flag, {@link LyricsAnalysisInput.displayable},
+ * and it is the only thing any interface consults. Whether text may be shown
  * is a fact about its provenance, so it travels with the text rather than
  * being decided again, differently, by each screen that renders it.
+ *
+ * Both are off by default and neither can be switched on by accident: the
+ * declaration carries the credit line the licence requires, so an operator who
+ * has not thought about attribution has not configured it either.
  */
+
+/**
+ * The operator's own licence to display lyrics.
+ *
+ * Set this only if you hold display rights from the rightsholder or their
+ * agent. It does not grant anything; it records that you have already been
+ * granted something, and it makes the app act on it. The obligations that come
+ * with such a licence — attribution, and often a limit on how much of a work
+ * may be shown — remain yours: `attribution` is rendered wherever the lines
+ * are, and `maxLines` truncates if your agreement covers an excerpt.
+ */
+export interface DisplayLicence {
+  /** Credit line shown with the lyrics, as the agreement requires. */
+  attribution: string;
+  /** Cap on lines shown, for licences that cover an excerpt rather than a work. */
+  maxLines?: number;
+}
 
 /**
  * A lyrics source that carries the right to display what it returns.
@@ -75,14 +100,22 @@ export interface LyricsAnalysisInput {
   /**
    * Whether these lines may be shown to a learner.
    *
-   * False for every unlicensed provider, which is both of the built-in ones.
-   * Only a {@link LicensedLyricsProvider} sets it true, and an interface that
-   * prints lines must check it — the analysis path ignores it, because
-   * deriving facts is allowed either way.
+   * False unless a {@link LicensedLyricsProvider} supplied them or the
+   * operator declared a {@link DisplayLicence}. Any interface that prints
+   * lines must check it; the analysis path ignores it, because deriving facts
+   * from a work is permitted either way.
    */
   displayable: boolean;
   /** Credit line the licence requires, when displaying is permitted. */
   attribution: string | null;
+  /**
+   * Most lines the licence permits *showing*, when it covers an excerpt.
+   *
+   * Null means no cap. It bounds display only — analysis reads the whole
+   * lyric either way, because measuring a work is not showing it, and a
+   * half-read song would report a wrong coverage figure.
+   */
+  maxDisplayLines: number | null;
 }
 
 export interface LyricsQuery {
@@ -127,16 +160,27 @@ export class LyricsSource {
 
   constructor(
     private readonly options: FetchOptions = {},
-    /**
-     * Providers that may be displayed, tried before the analysis-only pair.
-     * Empty by default: the app ships with no display licence.
-     */
-    private readonly licensed: LicensedLyricsProvider[] = [],
+    private readonly rights: {
+      /**
+       * Providers that carry their own display rights, tried before the
+       * analysis-only pair. Empty by default.
+       */
+      licensed?: LicensedLyricsProvider[];
+      /**
+       * The operator's own licence, if they hold one. Unset by default, which
+       * is what keeps this repository's default deployment analysis-only.
+       */
+      displayLicence?: DisplayLicence;
+    } = {},
   ) {}
 
-  /** True when at least one provider may show its lines to a learner. */
+  private get licensed(): LicensedLyricsProvider[] {
+    return this.rights.licensed ?? [];
+  }
+
+  /** True when lines fetched here may be shown to a learner. */
   get canDisplay(): boolean {
-    return this.licensed.length > 0;
+    return this.licensed.length > 0 || Boolean(this.rights.displayLicence);
   }
 
   /** Resolve lyrics. Returns null when no provider has the track. */
@@ -174,6 +218,9 @@ export class LyricsSource {
           instrumental: result.instrumental ?? false,
           displayable: true,
           attribution: provider.attribution,
+          // A provider that carries its own rights states its own limits by
+          // returning only what it may — there is no second cap to apply.
+          maxDisplayLines: null,
         };
       } catch (error) {
         console.warn(
@@ -196,8 +243,7 @@ export class LyricsSource {
         durationSeconds: track.duration ?? query.durationSeconds ?? null,
         provider: "lrclib",
         instrumental: true,
-        displayable: false,
-        attribution: null,
+        ...this.rightsOf(),
       };
     }
 
@@ -211,8 +257,7 @@ export class LyricsSource {
         durationSeconds: track.duration ?? query.durationSeconds ?? null,
         provider: "lrclib",
         instrumental: false,
-        displayable: false,
-        attribution: null,
+        ...this.rightsOf(),
       };
     }
 
@@ -224,8 +269,7 @@ export class LyricsSource {
       durationSeconds: track.duration ?? query.durationSeconds ?? null,
       provider: "lrclib",
       instrumental: false,
-      displayable: false,
-      attribution: null,
+      ...this.rightsOf(),
     };
   }
 
@@ -290,12 +334,33 @@ export class LyricsSource {
         durationSeconds: query.durationSeconds ?? null,
         provider: "lyrics.ovh",
         instrumental: false,
-        displayable: false,
-        attribution: null,
+        ...this.rightsOf(),
       };
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Whether lines from the analysis-only providers may be shown.
+   *
+   * Those providers cannot answer this about themselves — they hold no rights
+   * either way — so the answer comes from the operator's declared licence, or
+   * is "no" when there is none. Kept in one place so that a new return path
+   * cannot quietly default to displayable.
+   */
+  private rightsOf(): Pick<
+    LyricsAnalysisInput,
+    "displayable" | "attribution" | "maxDisplayLines"
+  > {
+    const licence = this.rights.displayLicence;
+    if (!licence) return { displayable: false, attribution: null, maxDisplayLines: null };
+
+    return {
+      displayable: true,
+      attribution: licence.attribution,
+      maxDisplayLines: licence.maxLines ?? null,
+    };
   }
 }
 

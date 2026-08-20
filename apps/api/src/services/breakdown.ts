@@ -42,6 +42,8 @@ interface Passage {
   /** Where the next page starts. */
   cursor: number;
   context?: string;
+  /** Credit required by the licence these lines came under, if any. */
+  attribution?: string;
   level: CefrLevel;
   /** Pages already explained, so paging back costs nothing. */
   pages: Map<number, PassageLine[]>;
@@ -59,6 +61,11 @@ export interface BreakdownPage {
   /** True when this page ends the passage. */
   done: boolean;
   context?: string;
+  /**
+   * Credit to render with the lines. Set only for a licensed source — text the
+   * learner pasted is theirs to read and carries no attribution obligation.
+   */
+  attribution?: string;
   message: string | null;
 }
 
@@ -76,7 +83,7 @@ function empty(message: string): BreakdownPage {
 export async function startBreakdown(
   userId: string,
   text: string,
-  options: { context?: string; source?: Interface } = {},
+  options: { context?: string; attribution?: string; source?: Interface } = {},
 ): Promise<BreakdownPage> {
   const lines = splitPassageLines(text, MAX_LINES);
   if (lines.length === 0) return empty("There was no Spanish in that — paste the words themselves.");
@@ -99,6 +106,7 @@ export async function startBreakdown(
     lines,
     cursor: 0,
     context: options.context,
+    attribution: options.attribution,
     level,
     pages: new Map(),
     expires: Date.now() + BUFFER_TTL_MS,
@@ -170,6 +178,7 @@ export async function nextBreakdownPage(
     total: passage.lines.length,
     done,
     context: passage.context,
+    attribution: passage.attribution,
     message: null,
   };
 }

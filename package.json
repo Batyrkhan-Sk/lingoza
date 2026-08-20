@@ -17,7 +17,7 @@
     "db:seed": "tsx --env-file-if-exists=.env prisma/seed.ts",
     "db:studio": "prisma studio",
     "setup": "npm install && npm run db:up && npm run db:generate && npm run db:deploy && npm run db:seed",
-    "test": "node --test --experimental-strip-types packages/engine/test/*.test.ts",
+    "test": "node --test --experimental-strip-types packages/engine/test/*.test.ts packages/content/test/*.test.ts",
     "content:verify": "npm run verify --workspace @lingoza/content",
     "db:up": "docker compose -f docker-compose.dev.yml up -d",
     "db:down": "docker compose -f docker-compose.dev.yml down",

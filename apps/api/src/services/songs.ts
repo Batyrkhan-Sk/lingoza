@@ -239,9 +239,16 @@ export async function studySong(
     analysis: { ...analysis, newWords: glossTargets, elisions },
     gloss,
     // The only branch in the app that lets a lyric line survive the function
-    // that fetched it, and it is reachable only through a provider that says
-    // it may. Everything else here is derived and travels freely.
-    lines: lyrics.displayable ? lyrics.lines : null,
+    // that fetched it, and it is reachable only where display rights have been
+    // declared. Everything above it is derived and travels freely.
+    //
+    // The excerpt cap applies here rather than at the fetch, because the
+    // analysis above is entitled to the whole lyric: measuring a work is not
+    // showing it, and analysing half a song would report a wrong coverage
+    // figure to the learner.
+    lines: lyrics.displayable
+      ? lyrics.lines.slice(0, lyrics.maxDisplayLines ?? lyrics.lines.length)
+      : null,
     attribution: lyrics.displayable ? lyrics.attribution : null,
     message: ai.enabled
       ? null
@@ -517,5 +524,6 @@ export async function startSongBreakdown(
 
   return startBreakdown(userId, study.lines.join("\n"), {
     context: `From the song "${study.track.title}" by ${study.track.artist}.`,
+    attribution: study.attribution ?? undefined,
   });
 }

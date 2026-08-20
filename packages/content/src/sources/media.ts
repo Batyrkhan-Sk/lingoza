@@ -6,6 +6,7 @@ import { GutenbergSource, type BookQuery } from "./gutenberg.js";
 import { PodcastSource, type PodcastQuery, type PodcastShow } from "./podcasts.js";
 import {
   LyricsSource,
+  type DisplayLicence,
   type LicensedLyricsProvider,
   type LyricsAnalysisInput,
   type LyricsQuery,
@@ -51,6 +52,15 @@ export interface MediaOptions {
    * print a lyric line, and it is a statement that you may.
    */
   licensedLyricsProviders?: LicensedLyricsProvider[];
+  /**
+   * Your own licence to display lyrics, if you hold one.
+   *
+   * Distinct from {@link licensedLyricsProviders}: that is a *source* which
+   * comes with rights attached, this is the operator stating that the rights
+   * are theirs and cover what the built-in sources return. Unset means lyrics
+   * are analysed and never shown, which is the default this repository ships.
+   */
+  lyricsDisplayLicence?: DisplayLicence;
 }
 
 interface CacheEntry {
@@ -74,7 +84,10 @@ export class MediaSources {
     this.tmdb = new TmdbSource(options.tmdbApiKey ?? "", fetchOptions);
     this.gutenberg = new GutenbergSource(fetchOptions);
     this.podcasts = new PodcastSource(fetchOptions);
-    this.lyrics = new LyricsSource(fetchOptions, options.licensedLyricsProviders ?? []);
+    this.lyrics = new LyricsSource(fetchOptions, {
+      licensed: options.licensedLyricsProviders,
+      displayLicence: options.lyricsDisplayLicence,
+    });
   }
 
   get enabled(): boolean {

@@ -1061,7 +1061,13 @@ async function renderBreakdownPage(chatId: number, page: BreakdownPage): Promise
     return;
   }
 
-  const blocks: string[] = [`*Lines ${page.from}–${page.to} of ${page.total}*`];
+  const blocks: string[] = [
+    `*Lines ${page.from}–${page.to} of ${page.total}*` +
+      // The credit rides on every page rather than only the first: a licence
+      // that requires attribution requires it wherever the words appear, and
+      // in a chat each page is its own screen.
+      (page.attribution ? `\n_${escapeMarkdown(page.attribution)}_` : ""),
+  ];
 
   for (const line of page.lines) {
     const block = [`🇪🇸 *${escapeMarkdown(line.original)}*`];

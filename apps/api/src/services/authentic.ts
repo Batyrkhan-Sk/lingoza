@@ -30,6 +30,15 @@ import { recordActivity } from "./progress.js";
 export const media = new MediaSources({
   tmdbApiKey: config.media.tmdbApiKey,
   enabled: config.sourcingEnabled,
+  // Present only when the operator has declared a lyrics display licence.
+  // Without it every lyric stays analysis-only, which is what an unmodified
+  // deployment of this repository does.
+  lyricsDisplayLicence: config.media.lyricsDisplayAttribution
+    ? {
+        attribution: config.media.lyricsDisplayAttribution,
+        maxLines: config.media.lyricsDisplayMaxLines ?? undefined,
+      }
+    : undefined,
 });
 
 async function levelOf(userId: string): Promise<CefrLevel> {

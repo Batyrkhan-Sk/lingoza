@@ -192,6 +192,10 @@ GROQ_MODEL=openai/gpt-oss-120b
 # Daily study reminders — three a day, at hours each learner sets with /remind.
 REMINDERS=on
 REMINDER_INTERVAL_MINUTES=10
+
+# Lyrics display — leave unset unless you hold display rights. See below.
+LYRICS_DISPLAY_ATTRIBUTION=
+LYRICS_DISPLAY_MAX_LINES=
 EOF
 
 chmod 600 .env
@@ -209,6 +213,23 @@ Use **hex, not base64**, for `TELEGRAM_WEBHOOK_SECRET`: Telegram only accepts
 characters"*, which does not name the offending field.
 
 `docker-compose.yml` deliberately fails fast if `DOMAIN`, `JWT_SECRET` or `POSTGRES_PASSWORD` is missing — a stack that starts with a default secret is worse than one that refuses to start.
+
+### Lyrics display
+
+By default the bot reads a song's lyrics, derives the breakdown — coverage, vocabulary, grammar, pace — and discards the text. It does not print a lyric line, because LRCLIB and lyrics.ovh hold no rights to redistribute one.
+
+`LYRICS_DISPLAY_ATTRIBUTION` turns display on. Set it **only if you hold display rights** from the rightsholder or their agent, and set it to the credit line your agreement requires:
+
+```bash
+LYRICS_DISPLAY_ATTRIBUTION="Lyrics licensed from <your licensor>"
+LYRICS_DISPLAY_MAX_LINES=              # set a number if your licence covers an excerpt
+```
+
+The credit line is the switch rather than a boolean, deliberately: it cannot be set without deciding what attribution you owe, and it is rendered on every page of lyrics the bot sends. `LYRICS_DISPLAY_MAX_LINES` caps how much of a work is *shown*; the analysis still reads the whole lyric, because measuring a work is not publishing it and a half-read song reports the wrong coverage figure.
+
+With it set, `/song` grows a **📝 Read it line by line** button and walks the learner through the fetched lyric — line, translation, hard words, grammar. With it unset, the learner pastes the words in themselves and gets the identical walkthrough.
+
+If your rights come with an aggregator's API instead (Musixmatch, LyricFind), implement `LicensedLyricsProvider` in `packages/content/src/sources/lyrics.ts` and pass it as `MediaOptions.licensedLyricsProviders` — it is tried before the free sources and carries its own attribution.
 
 ---
 
