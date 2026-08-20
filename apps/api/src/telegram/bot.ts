@@ -1081,10 +1081,19 @@ async function renderBreakdownPage(chatId: number, page: BreakdownPage): Promise
     // Grammar and dialect are marked differently on purpose: one is a rule to
     // learn and use, the other a sound to recognise and never write. A learner
     // skimming a long passage should be able to tell them apart at a glance.
-    for (const point of line.grammar) {
-      block.push(`  📐 *${escapeMarkdown(point.point)}* — ${escapeMarkdown(point.explanation)}`);
+    //
+    // They are also set off from the glosses by a blank line, because the two
+    // read at different speeds — a gloss is scanned, an explanation is read —
+    // and running them together turns the whole entry into one grey block.
+    const notes: string[] = line.grammar.map(
+      (point) => `  🧩 *${escapeMarkdown(point.point)}* — ${escapeMarkdown(point.explanation)}`,
+    );
+    if (line.dialect) notes.push(`  🗣 _${escapeMarkdown(line.dialect)}_`);
+
+    if (notes.length > 0) {
+      if (line.words.length > 0) block.push("");
+      block.push(...notes);
     }
-    if (line.dialect) block.push(`  🗣 _${escapeMarkdown(line.dialect)}_`);
 
     blocks.push(block.join("\n"));
   }
