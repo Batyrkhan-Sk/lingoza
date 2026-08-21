@@ -15,6 +15,7 @@ import {
 } from "@lingoza/engine";
 import { prisma } from "../db.js";
 import { recordActivity, refreshDerivedCounters } from "./progress.js";
+import { advanceDailyItem } from "./dailyProgress.js";
 
 /**
  * Vocabulary and spaced repetition (§4).
@@ -79,7 +80,16 @@ export async function getNewWordBudget(userId: string): Promise<NewWordBudget> {
   return { target, introduced, remaining, reached: remaining === 0 };
 }
 
-export async function getDueQueue(userId: string, limit = 20) {
+export interface DueQueueOptions {
+  /**
+   * Restrict the queue to one half of it. Today's plan reviews and introduces
+   * as two separate items with two separate budgets, so each needs to be able
+   * to ask for its own material rather than whatever comes off the top.
+   */
+  only?: "due" | "new";
+}
+
+export async function getDueQueue(userId: string, limit = 20, options: DueQueueOptions = {}) {
   const [progress, budget] = await Promise.all([
     prisma.userProgress.findUnique({ where: { userId } }),
     getNewWordBudget(userId),
@@ -91,13 +101,20 @@ export async function getDueQueue(userId: string, limit = 20) {
     include: { word: true },
   });
 
-  const due = selectDue({
-    items: existing,
-    dueAt: (item) => item.dueAt,
-    status: (item) => item.status as ReviewState["status"],
-    limit,
-    newLimit: budget.remaining,
-  });
+  const due =
+    options.only === "new"
+      ? []
+      : selectDue({
+          items: existing,
+          dueAt: (item) => item.dueAt,
+          status: (item) => item.status as ReviewState["status"],
+          limit,
+          newLimit: budget.remaining,
+        });
+
+  if (options.only === "due") {
+    return due.map((item) => ({ word: item.word, state: toState(item), isNew: false }));
+  }
 
   // Top up with words the learner has never seen, most frequent first —
   // but only up to what today's budget still allows.
@@ -212,10 +229,20 @@ export async function reviewVocabulary(input: ReviewInput) {
     source,
   });
 
+  // Spend the card against today's plan, whichever interface it came from: a
+  // first meeting draws on the day's new-word allocation, a scheduled review on
+  // the review budget. Reaching either ends that item of the session.
+  const plan = await advanceDailyItem(userId, [existing ? "review" : "vocabulary"]);
+
   return {
     correct,
     grade,
     check,
+    /// First meeting with this word, as opposed to a scheduled review. The two
+    /// are budgeted separately by the daily plan.
+    isNew: !existing,
+    /// How this card moved today's session on, or null if it was outside it.
+    plan,
     nextDueAt: next.dueAt,
     intervalDays: next.intervalDays,
     strength: next.strength,

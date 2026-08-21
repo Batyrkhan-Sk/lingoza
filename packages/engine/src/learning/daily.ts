@@ -101,7 +101,12 @@ export function generateDailyPlan(input: DailyPlanInput): DailyPlan {
   // 1. Reviews first, always. They are time-critical in a way new material is
   //    not: a word reviewed tomorrow instead of today is measurably weaker.
   if (wordsDue > 0) {
-    const reviewCount = Math.min(wordsDue, Math.max(5, Math.round(12 * scale * mix.vocabulary)));
+    // Ten at the reference budget, scaled with it. The floor is a floor rather
+    // than a target: a learner whose vocabulary is weak gets more, never fewer.
+    const reviewCount = Math.min(
+      wordsDue,
+      Math.max(Math.round(10 * scale), Math.round(12 * scale * mix.vocabulary)),
+    );
     push({
       kind: "review",
       title: `Review ${reviewCount} words`,

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { RecallGrade } from "@lingoza/engine";
 import { prisma } from "../../db.js";
+import { currentDailyItem } from "../../services/dailyProgress.js";
 import {
   getDueQueue,
   getDueSummary,
@@ -98,14 +99,29 @@ studyRoutes.get("/vocabulary/topics", async (c) => c.json({ topics: await vocabu
 studyRoutes.get("/vocabulary/due", async (c) => {
   const user = c.get("user");
   const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 20;
+
+  // Today's plan decides what this session is for. While its review item is
+  // open the queue is due words; once that budget is spent the vocabulary item
+  // takes over and the queue is new words. With no open item — a learner who
+  // has finished their plan and wants more — the queue is simply everything.
+  const planned = await currentDailyItem(user.id, ["review", "vocabulary"]);
+  const only = planned?.kind === "review" ? "due" : planned?.kind === "vocabulary" ? "new" : undefined;
+
   const [queue, summary, budget] = await Promise.all([
-    getDueQueue(user.id, limit),
+    getDueQueue(user.id, limit, { only }),
     getDueSummary(user.id),
     getNewWordBudget(user.id),
   ]);
   // The budget travels with the queue so both interfaces can say *why* new
   // words stopped, rather than silently running dry.
-  return c.json({ queue, summary, budget });
+  return c.json({
+    queue,
+    summary,
+    budget,
+    plan: planned
+      ? { title: planned.title, quantity: planned.quantity, progress: planned.progress }
+      : null,
+  });
 });
 
 studyRoutes.post("/vocabulary/:id/review", async (c) => {

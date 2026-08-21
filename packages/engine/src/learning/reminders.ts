@@ -12,10 +12,100 @@
  */
 
 /** Morning plan, midday micro-drill, evening streak check. */
-export const DEFAULT_REMINDER_HOURS = [9, 13, 20] as const;
+const DEFAULT_REMINDER_HOURS = [9, 13, 20] as const;
+
+/**
+ * The default schedule, as minutes past local midnight.
+ *
+ * Times are held in minutes rather than whole hours because "remind me at
+ * 08:45" is a normal thing to want, and rounding it to 09:00 quietly ignores
+ * the learner. Everything downstream compares minutes, so precision costs
+ * nothing.
+ */
+export const DEFAULT_REMINDER_TIMES: number[] = DEFAULT_REMINDER_HOURS.map((h) => h * 60);
 
 /** More than this and reminders stop being reminders and become noise. */
 export const MAX_REMINDERS_PER_DAY = 6;
+
+const MINUTES_PER_DAY = 24 * 60;
+
+/**
+ * One time of day → minutes past midnight.
+ *
+ * Accepts "8:45", "08:45" and a bare "9", the last of which is what accounts
+ * created before minute precision have stored.
+ */
+export function parseTimeOfDay(raw: string): number | null {
+  const match = /^(\d{1,2})(?::(\d{1,2}))?$/.exec(raw.trim());
+  if (!match) return null;
+
+  const hour = Number.parseInt(match[1]!, 10);
+  const minute = match[2] ? Number.parseInt(match[2], 10) : 0;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  return hour * 60 + minute;
+}
+
+/** Minutes past midnight → "08:45", the form both stored and displayed. */
+export function formatTimeOfDay(minutes: number): string {
+  const wrapped = ((Math.round(minutes) % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  const hour = Math.floor(wrapped / 60);
+  return `${String(hour).padStart(2, "0")}:${String(wrapped % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Parse the stored schedule, discarding anything invalid.
+ *
+ * Reads both the current "08:45,13:00,20:00" and the older "9,13,20" that
+ * accounts were written with before minute precision, so no migration of
+ * stored preferences is needed.
+ */
+export function parseReminderTimes(raw: string | null | undefined): number[] {
+  const parsed = (raw ?? "")
+    .split(",")
+    .map((part) => parseTimeOfDay(part))
+    .filter((minutes): minutes is number => minutes !== null);
+
+  const unique = [...new Set(parsed)].sort((a, b) => a - b);
+  return unique.length > 0 ? unique.slice(0, MAX_REMINDERS_PER_DAY) : [...DEFAULT_REMINDER_TIMES];
+}
+
+/** The canonical stored form, e.g. "08:45,13:00,20:00". */
+export function formatReminderTimes(times: number[]): string {
+  return parseReminderTimes(times.map(formatTimeOfDay).join(",")).map(formatTimeOfDay).join(",");
+}
+
+/** Human-readable "08:45, 13:00, 20:00" for settings screens and the bot. */
+export function describeReminderTimes(times: number[]): string {
+  return parseReminderTimes(times.map(formatTimeOfDay).join(","))
+    .map(formatTimeOfDay)
+    .join(", ");
+}
+
+/**
+ * Assign a purpose to every configured time.
+ *
+ * With a single reminder there is no "rest of the day" to plan, so an early
+ * one still opens the day and a late one closes it.
+ */
+export function scheduleFor(raw: string | null | undefined): ReminderSchedule {
+  const times = parseReminderTimes(raw);
+
+  const slots = times.map((minutes, index): ReminderSlot => {
+    if (times.length === 1) return minutes < 15 * 60 ? "kickoff" : "closeout";
+    if (index === 0) return "kickoff";
+    if (index === times.length - 1) return "closeout";
+    return "micro";
+  });
+
+  return { times, slots };
+}
+
+export interface ReminderSchedule {
+  /** Minutes past local midnight, ascending. */
+  times: number[];
+  slots: ReminderSlot[];
+}
 
 /**
  * What a given slot is *for*.
@@ -26,50 +116,16 @@ export const MAX_REMINDERS_PER_DAY = 6;
  */
 export type ReminderSlot = "kickoff" | "micro" | "closeout";
 
-export interface ReminderSchedule {
-  hours: number[];
-  slots: ReminderSlot[];
-}
-
-/** Parse the stored "9,13,20" into usable hours, discarding anything invalid. */
-export function parseReminderHours(raw: string | null | undefined): number[] {
-  const parsed = (raw ?? "")
-    .split(",")
-    .map((part) => Number.parseInt(part.trim(), 10))
-    .filter((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23);
-
-  const unique = [...new Set(parsed)].sort((a, b) => a - b);
-  return unique.length > 0 ? unique.slice(0, MAX_REMINDERS_PER_DAY) : [...DEFAULT_REMINDER_HOURS];
-}
-
-export function formatReminderHours(hours: number[]): string {
-  return parseReminderHours(hours.join(",")).join(",");
-}
-
-/** Human-readable "09:00, 13:00, 20:00" for settings screens and the bot. */
-export function describeReminderHours(hours: number[]): string {
-  return parseReminderHours(hours.join(","))
-    .map((hour) => `${String(hour).padStart(2, "0")}:00`)
-    .join(", ");
-}
-
 /**
- * Assign a purpose to every configured hour.
+ * The learner's local time of day, in minutes past midnight.
  *
- * With a single reminder there is no "rest of the day" to plan, so an early
- * one still opens the day and a late one closes it.
+ * This is the whole reason a learner's timezone has to be real: "08:45" has to
+ * mean 08:45 where they are, not 08:45 UTC. An account still on the default
+ * gets reminded at its own local time, which is exactly the bug this reads
+ * against.
  */
-export function scheduleFor(rawHours: string | null | undefined): ReminderSchedule {
-  const hours = parseReminderHours(rawHours);
-
-  const slots = hours.map((hour, index): ReminderSlot => {
-    if (hours.length === 1) return hour < 15 ? "kickoff" : "closeout";
-    if (index === 0) return "kickoff";
-    if (index === hours.length - 1) return "closeout";
-    return "micro";
-  });
-
-  return { hours, slots };
+export function localMinutes(date: Date = new Date(), timeZone = "UTC"): number {
+  return localHour(date, timeZone) * 60 + localMinute(date, timeZone);
 }
 
 /** The learner's local hour (0–23), so "09:00" means 09:00 where they are. */
@@ -100,10 +156,55 @@ export function localMinute(date: Date = new Date(), timeZone = "UTC"): number {
   }
 }
 
+/**
+ * Resolve whatever the learner typed into a zone `Intl` will accept.
+ *
+ * An IANA name is taken as-is once it is known to work. A plain offset — "+5",
+ * "UTC+5", "GMT-3" — becomes the matching `Etc/GMT` zone, whose sign is
+ * inverted by the POSIX convention the name inherits: UTC+5 is `Etc/GMT-5`.
+ * Offsets do not track daylight saving, so a name is always preferable and the
+ * caller should say so.
+ */
+export function normalizeTimezone(raw: string): string | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const offset = /^(?:utc|gmt)?\s*([+-])\s*(\d{1,2})(?::?(00|30|45))?$/i.exec(text);
+  if (offset) {
+    const hours = Number.parseInt(offset[2]!, 10);
+    // Only whole-hour offsets have an Etc/GMT zone; the half-hour ones
+    // (India, Nepal) have to be given by name.
+    if (hours > 14 || (offset[3] && offset[3] !== "00")) return null;
+    if (hours === 0) return "UTC";
+    return `Etc/GMT${offset[1] === "+" ? "-" : "+"}${hours}`;
+  }
+
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: text }).format(new Date());
+    return text;
+  } catch {
+    return null;
+  }
+}
+
+/** How a zone reads to a learner: "Asia/Almaty (UTC+5, 08:45 now)". */
+export function describeTimezone(timeZone: string, now: Date = new Date()): string {
+  const time = formatTimeOfDay(localMinutes(now, timeZone));
+  const offsetMinutes = localMinutes(now, timeZone) - localMinutes(now, "UTC");
+  // Wrap the comparison: local and UTC can sit on different calendar days.
+  const wrapped = ((offsetMinutes + 720 + MINUTES_PER_DAY) % MINUTES_PER_DAY) - 720;
+  const sign = wrapped < 0 ? "-" : "+";
+  const abs = Math.abs(wrapped);
+  const offset =
+    abs % 60 === 0 ? `${sign}${abs / 60}` : `${sign}${Math.floor(abs / 60)}:${String(abs % 60).padStart(2, "0")}`;
+
+  return `${timeZone} (UTC${offset}, ${time} now)`;
+}
+
 export interface DueReminderInput {
   now: Date;
   timezone: string;
-  /** Raw stored value, e.g. "9,13,20". */
+  /** Raw stored value, e.g. "08:45,13:00,20:00" (or a legacy "9,13,20"). */
   reminderHours: string | null | undefined;
   /**
    * How long after the hour a reminder may still be sent. The sweep runs on an
@@ -114,6 +215,9 @@ export interface DueReminderInput {
 }
 
 export interface DueReminder {
+  /** Minutes past local midnight — the slot's configured time. */
+  minutes: number;
+  /** The hour it falls in, for callers that only report the coarse time. */
   hour: number;
   slot: ReminderSlot;
   /** Stable per learner per day — the key that makes re-sending impossible. */
@@ -127,26 +231,28 @@ export interface DueReminder {
  * slot they are currently in, not a burst of everything they missed.
  */
 export function dueReminder(input: DueReminderInput): DueReminder | null {
-  const { hours, slots } = scheduleFor(input.reminderHours);
+  const { times, slots } = scheduleFor(input.reminderHours);
   const grace = input.graceMinutes ?? 30;
 
-  const hour = localHour(input.now, input.timezone);
-  const minute = localMinute(input.now, input.timezone);
-  const minutesNow = hour * 60 + minute;
+  const minutesNow = localMinutes(input.now, input.timezone);
 
   let best: DueReminder | null = null;
   let bestAge = Number.POSITIVE_INFINITY;
 
-  for (const [index, slotHour] of hours.entries()) {
-    const age = minutesNow - slotHour * 60;
+  for (const [index, slotMinutes] of times.entries()) {
+    const age = minutesNow - slotMinutes;
     if (age < 0 || age > grace) continue;
     if (age >= bestAge) continue;
 
     bestAge = age;
     best = {
-      hour: slotHour,
+      minutes: slotMinutes,
+      hour: Math.floor(slotMinutes / 60),
       slot: slots[index] ?? "micro",
-      dedupeKey: (userId, dateKey) => `reminder:${userId}:${dateKey}:${slotHour}`,
+      // Keyed by the slot's own time, so editing the schedule mid-day cannot
+      // re-open a slot that has already been delivered.
+      dedupeKey: (userId, dateKey) =>
+        `reminder:${userId}:${dateKey}:${formatTimeOfDay(slotMinutes)}`,
     };
   }
 
@@ -302,10 +408,27 @@ function closeout(input: NudgeInput, name: string): Nudge {
   }
 
   if (input.itemsRemaining > 0) {
+    const finished = input.totalItems - input.itemsRemaining;
+
+    // "Good work today — 0/5 done" is a contradiction, and reads as a bot that
+    // is not paying attention. Studying today and finishing part of the plan
+    // are different facts, so a day where the plan was never touched gets an
+    // honest nudge rather than praise for nothing.
+    if (finished === 0) {
+      return {
+        kind: "reminder",
+        title: "Still time today",
+        body:
+          `${name}, today's plan is still untouched — ${input.totalItems} things, ` +
+          `about ${input.targetMinutes} minutes. Even the first one keeps the day alive.`,
+        action: "daily",
+      };
+    }
+
     return {
       kind: "reminder",
       title: "Almost there",
-      body: `Good work today, ${name} — ${input.totalItems - input.itemsRemaining}/${input.totalItems} done. ${input.itemsRemaining} left if you have a few minutes.`,
+      body: `Good work today, ${name} — ${finished}/${input.totalItems} done. ${input.itemsRemaining} left if you have a few minutes.`,
       action: "daily",
     };
   }

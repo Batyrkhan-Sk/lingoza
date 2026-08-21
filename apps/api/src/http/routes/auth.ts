@@ -1,5 +1,10 @@
 import { Hono } from "hono";
-import { formatReminderHours, parseReminderHours } from "@lingoza/engine";
+import {
+  formatReminderTimes,
+  formatTimeOfDay,
+  normalizeTimezone,
+  parseReminderTimes,
+} from "@lingoza/engine";
 import { generateLinkCode, hashPassword, signToken, verifyPassword } from "../../auth.js";
 import { prisma } from "../../db.js";
 import { ensureProgress } from "../../services/progress.js";
@@ -106,7 +111,8 @@ authRoutes.get("/me", async (c) => {
     timezone: full.timezone,
     telegramLinked: Boolean(full.telegramId),
     remindersEnabled: full.remindersEnabled,
-    reminderHours: parseReminderHours(full.reminderHours),
+    // "HH:MM" strings rather than bare hours, so 08:45 round-trips.
+    reminderTimes: parseReminderTimes(full.reminderHours).map(formatTimeOfDay),
     level: full.progress?.currentLevelCode ?? "A1",
     needsPlacement: !placement,
   });
@@ -121,7 +127,8 @@ authRoutes.patch("/me", async (c) => {
     newWordsPerDay?: number;
     timezone?: string;
     remindersEnabled?: boolean;
-    reminderHours?: number[];
+    /** "HH:MM" local times, e.g. ["08:45", "13:00", "20:00"]. */
+    reminderTimes?: string[];
     currentLevelCode?: string;
   }>();
 
@@ -140,14 +147,20 @@ authRoutes.patch("/me", async (c) => {
           // a legitimate choice, and 0 is a valid "reviews only" mode.
           { newWordsPerDay: Math.max(0, Math.min(50, Math.round(body.newWordsPerDay))) }
         : {}),
-      ...(body.timezone ? { timezone: body.timezone } : {}),
+      // Normalised so an offset ("+5") or a name both land as something Intl
+      // can resolve; anything it cannot is ignored rather than stored broken.
+      ...(body.timezone && normalizeTimezone(body.timezone)
+        ? { timezone: normalizeTimezone(body.timezone)! }
+        : {}),
       ...(typeof body.remindersEnabled === "boolean"
         ? { remindersEnabled: body.remindersEnabled }
         : {}),
-      ...(Array.isArray(body.reminderHours) && body.reminderHours.length > 0
+      ...(Array.isArray(body.reminderTimes) && body.reminderTimes.length > 0
         ? {
-            reminderHours: formatReminderHours(body.reminderHours),
-            reminderHour: parseReminderHours(body.reminderHours.join(","))[0] ?? 9,
+            reminderHours: formatReminderTimes(parseReminderTimes(body.reminderTimes.join(","))),
+            reminderHour: Math.floor(
+              (parseReminderTimes(body.reminderTimes.join(","))[0] ?? 9 * 60) / 60,
+            ),
           }
         : {}),
     },

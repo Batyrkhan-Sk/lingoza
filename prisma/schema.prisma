@@ -1001,6 +1001,10 @@ model DailySessionItem {
   /// because it is a *budget*, not display text: the vocabulary session stops
   /// once the day's allocation of new words has been introduced.
   quantity   Int?
+  /// How many of those units are done. Counted as the learner works, so an
+  /// item finishes itself at its budget instead of running until the
+  /// underlying queue happens to empty.
+  progress   Int     @default(0)
   minutes    Int     @default(3)
   orderIndex Int
   completed  Boolean @default(false)

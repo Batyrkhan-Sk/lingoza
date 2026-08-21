@@ -85,7 +85,7 @@ export function SettingsPage() {
           </Badge>
         </div>
         <p className="small secondary">
-          The Telegram bot nudges you at these hours, in your own timezone ({user.timezone}). Each
+          The Telegram bot nudges you at these times, in your own timezone ({user.timezone}). Each
           one does a different job: the first hands you today's plan, the middle one is a single
           review card you can answer in the chat, and the last only arrives if the day is still
           empty.
@@ -101,8 +101,8 @@ export function SettingsPage() {
           {REMINDER_PRESETS.map((preset) => (
             <button
               key={preset.label}
-              className={`btn ${sameHours(user.reminderHours, preset.hours) ? "btn-primary" : ""}`}
-              onClick={() => save.mutate({ reminderHours: preset.hours, remindersEnabled: true })}
+              className={`btn ${sameTimes(user.reminderTimes, preset.times) ? "btn-primary" : ""}`}
+              onClick={() => save.mutate({ reminderTimes: preset.times, remindersEnabled: true })}
             >
               {preset.label}
             </button>
@@ -174,14 +174,14 @@ export function SettingsPage() {
  * with three reminders inside one hour.
  */
 const REMINDER_PRESETS = [
-  { label: "🌅 07 · 12 · 19", hours: [7, 12, 19] },
-  { label: "☀️ 09 · 13 · 20", hours: [9, 13, 20] },
-  { label: "🌆 10 · 15 · 22", hours: [10, 15, 22] },
-  { label: "🌙 12 · 18 · 23", hours: [12, 18, 23] },
+  { label: "🌅 07 · 12 · 19", times: ["07:00", "12:00", "19:00"] },
+  { label: "☀️ 09 · 13 · 20", times: ["09:00", "13:00", "20:00"] },
+  { label: "🌆 10 · 15 · 22", times: ["10:00", "15:00", "22:00"] },
+  { label: "🌙 12 · 18 · 23", times: ["12:00", "18:00", "23:00"] },
 ];
 
-function sameHours(a: number[] | undefined, b: number[]): boolean {
-  return (a ?? []).length === b.length && (a ?? []).every((hour, index) => hour === b[index]);
+function sameTimes(a: string[] | undefined, b: string[]): boolean {
+  return (a ?? []).length === b.length && (a ?? []).every((time, index) => time === b[index]);
 }
 
 function browserTimezone(): string {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Word } from "../lib/api";
 import { PageHeader } from "../components/Layout";
@@ -39,34 +40,80 @@ interface DueItem {
   state: { strength: number; status: string } | null;
 }
 
+interface PlannedBlock {
+  title: string;
+  quantity: number | null;
+  progress: number;
+}
+
+interface PlanAdvance {
+  justCompleted: boolean;
+  remaining: number | null;
+  item: { title: string };
+  next: { title: string; rationale: string; minutes: number } | null;
+}
+
 function ReviewSession() {
   const queryClient = useQueryClient();
   const [revealed, setRevealed] = useState(false);
   const [done, setDone] = useState(0);
+  // Set when a block of today's plan hits its budget, so the session ends where
+  // the plan said it would instead of running the whole queue.
+  const [finished, setFinished] = useState<PlanAdvance | null>(null);
 
   const due = useQuery({
     queryKey: ["vocab-due"],
     queryFn: () =>
-      api.get<{ queue: DueItem[]; summary: { total: number; reviews: number; learning: number; fresh: number } }>(
-        "/vocabulary/due?limit=20",
-      ),
+      api.get<{
+        queue: DueItem[];
+        summary: { total: number; reviews: number; learning: number; fresh: number };
+        plan: PlannedBlock | null;
+      }>("/vocabulary/due?limit=20"),
   });
 
   const review = useMutation({
     mutationFn: ({ wordId, grade }: { wordId: string; grade: string }) =>
-      api.post<{ intervalDays: number; status: string }>(`/vocabulary/${wordId}/review`, {
-        grade,
-        source: "web",
-      }),
-    onSuccess: async () => {
+      api.post<{ intervalDays: number; status: string; plan: PlanAdvance | null }>(
+        `/vocabulary/${wordId}/review`,
+        { grade, source: "web" },
+      ),
+    onSuccess: async (result) => {
       setRevealed(false);
       setDone((n) => n + 1);
+      if (result.plan?.justCompleted) setFinished(result.plan);
       await queryClient.invalidateQueries({ queryKey: ["vocab-due"] });
+      await queryClient.invalidateQueries({ queryKey: ["daily"] });
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 
   if (due.isLoading) return <Loading />;
+
+  if (finished) {
+    return (
+      <Card>
+        <div className="center" style={{ padding: "22px 0" }}>
+          <Badge tone="success">Done</Badge>
+          <div style={{ fontSize: "1.3rem", fontWeight: 600, margin: "12px 0 4px" }}>
+            {finished.item.title}
+          </div>
+          <div className="small muted">
+            That is the whole block — {done} card{done === 1 ? "" : "s"} this session.
+          </div>
+          {finished.next && (
+            <div className="mt-lg">
+              <div className="small">Next up: <strong>{finished.next.title}</strong></div>
+              <div className="tiny muted">{finished.next.rationale} · {finished.next.minutes} min</div>
+            </div>
+          )}
+          <div className="row mt-lg" style={{ justifyContent: "center", gap: 8 }}>
+            <Link to="/daily" className="btn btn-primary">Today's plan</Link>
+            <button className="btn" onClick={() => setFinished(null)}>Keep reviewing</button>
+          </div>
+        </div>
+      </Card>
+    );
+  }
 
   const item = due.data?.queue[0];
 
@@ -86,11 +133,18 @@ function ReviewSession() {
   }
 
   const word = item.word;
+  const plan = due.data?.plan;
 
   return (
     <>
       <div className="row mb" style={{ gap: 14 }}>
-        <span className="tiny muted">{due.data?.summary.total ?? 0} due</span>
+        {plan?.quantity ? (
+          <span className="tiny muted">
+            {plan.title} — {Math.min(plan.progress + 1, plan.quantity)} of {plan.quantity}
+          </span>
+        ) : (
+          <span className="tiny muted">{due.data?.summary.total ?? 0} due</span>
+        )}
         <span className="tiny muted">·</span>
         <span className="tiny muted">{done} done this session</span>
       </div>

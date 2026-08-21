@@ -1,10 +1,11 @@
 import {
   composeNudge,
-  describeReminderHours,
+  describeReminderTimes,
   dueReminder,
-  formatReminderHours,
+  formatReminderTimes,
   localDateKey,
-  parseReminderHours,
+  normalizeTimezone,
+  parseReminderTimes,
   shouldSend,
   type Nudge,
   type NudgeInput,
@@ -293,7 +294,8 @@ function keyboardFor(nudge: Nudge, state: NudgeState): InlineKeyboard {
 
 export interface ReminderSettings {
   enabled: boolean;
-  hours: number[];
+  /** Minutes past local midnight, so 08:45 survives as 08:45. */
+  times: number[];
   timezone: string;
   description: string;
 }
@@ -304,36 +306,49 @@ export async function getReminderSettings(userId: string): Promise<ReminderSetti
     select: { remindersEnabled: true, reminderHours: true, timezone: true },
   });
 
-  const hours = parseReminderHours(user.reminderHours);
+  const times = parseReminderTimes(user.reminderHours);
   return {
     enabled: user.remindersEnabled,
-    hours,
+    times,
     timezone: user.timezone,
-    description: describeReminderHours(hours),
+    description: describeReminderTimes(times),
   };
 }
 
 export async function updateReminderSettings(
   userId: string,
-  patch: { enabled?: boolean; hours?: number[]; timezone?: string },
+  patch: { enabled?: boolean; times?: number[]; timezone?: string },
 ): Promise<ReminderSettings> {
+  // A zone the platform cannot resolve would silently fall back to UTC at send
+  // time, which is the failure it is meant to fix — so it is rejected loudly.
+  const timezone = patch.timezone ? normalizeTimezone(patch.timezone) : undefined;
+  if (patch.timezone && !timezone) {
+    throw new Error(`Unrecognised timezone: ${patch.timezone}`);
+  }
+
+  const times = patch.times ? parseReminderTimes(patch.times.map(minutesToText).join(",")) : null;
+
   await prisma.user.update({
     where: { id: userId },
     data: {
       ...(typeof patch.enabled === "boolean" ? { remindersEnabled: patch.enabled } : {}),
-      ...(patch.hours
+      ...(times
         ? {
-            reminderHours: formatReminderHours(patch.hours),
+            reminderHours: formatReminderTimes(times),
             // Keep the legacy single-slot column consistent for any client
-            // still reading it.
-            reminderHour: parseReminderHours(patch.hours.join(","))[0] ?? 9,
+            // still reading it. It only holds an hour, so it rounds.
+            reminderHour: Math.floor((times[0] ?? 9 * 60) / 60),
           }
         : {}),
-      ...(patch.timezone ? { timezone: patch.timezone } : {}),
+      ...(timezone ? { timezone } : {}),
     },
   });
 
   return getReminderSettings(userId);
+}
+
+function minutesToText(minutes: number): string {
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}`;
 }
 
 /**

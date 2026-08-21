@@ -13,6 +13,7 @@ import { prisma } from "../db.js";
 import { getNextLesson } from "./learning.js";
 import { getMistakePatterns } from "./practice.js";
 import { getDueSummary } from "./vocabulary.js";
+import { syncSessionProgress } from "./dailyProgress.js";
 
 /**
  * The planner: what should this learner do next, and why.
@@ -189,23 +190,15 @@ export async function completeDailyItem(userId: string, itemId: string) {
   });
 
   if (!item.completed) {
-    await prisma.dailySessionItem.update({ where: { id: itemId }, data: { completed: true } });
+    await prisma.dailySessionItem.update({
+      where: { id: itemId },
+      // Marking an item done by hand settles its counter too, so a plan that
+      // is 4/4 done never shows a half-finished item underneath.
+      data: { completed: true, progress: Math.max(item.progress, item.quantity ?? item.progress) },
+    });
   }
 
-  const completedItems = await prisma.dailySessionItem.count({
-    where: { sessionId: item.sessionId, completed: true },
-  });
-  const done = completedItems >= item.session.totalItems;
-
-  return prisma.dailySession.update({
-    where: { id: item.sessionId },
-    data: {
-      completedItems,
-      status: done ? "completed" : "in_progress",
-      completedAt: done ? new Date() : null,
-    },
-    include: { items: { orderBy: { orderIndex: "asc" } } },
-  });
+  return syncSessionProgress(item.sessionId, item.session.totalItems);
 }
 
 async function nextUnstudiedGrammar(userId: string, level: string) {

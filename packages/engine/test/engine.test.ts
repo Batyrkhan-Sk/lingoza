@@ -27,7 +27,10 @@ import {
   detectElision,
   parseLrc,
   splitPassageLines,
-  parseReminderHours,
+  parseReminderTimes,
+  formatTimeOfDay,
+  normalizeTimezone,
+  describeTimezone,
   scheduleFor,
   dueReminder,
   composeNudge,
@@ -303,6 +306,16 @@ describe("daily planning", () => {
     assert.equal(plan.items[0]?.kind, "review");
   });
 
+  test("the reference budget reviews ten words, and never more than are due", () => {
+    const plan = generateDailyPlan({ snapshot, targetMinutes: 20, wordsDue: 34 });
+    const review = plan.items.find((i) => i.kind === "review");
+    assert.equal(review?.quantity, 10);
+
+    // The count is a budget, so it cannot promise words that are not there.
+    const short = generateDailyPlan({ snapshot, targetMinutes: 20, wordsDue: 4 });
+    assert.equal(short.items.find((i) => i.kind === "review")?.quantity, 4);
+  });
+
   test("a learner with no words due gets no review item", () => {
     const plan = generateDailyPlan({
       snapshot: { ...snapshot, wordsDue: 0 },
@@ -515,20 +528,71 @@ describe("memory hooks", () => {
 
 
 describe("reminder scheduling", () => {
+  const at = (times: number[]) => times.map(formatTimeOfDay);
+
   test("falls back to three sensible slots when the setting is junk", () => {
-    assert.deepEqual(parseReminderHours("banana"), [9, 13, 20]);
-    assert.deepEqual(parseReminderHours(""), [9, 13, 20]);
-    assert.deepEqual(parseReminderHours("25,-3"), [9, 13, 20]);
+    assert.deepEqual(at(parseReminderTimes("banana")), ["09:00", "13:00", "20:00"]);
+    assert.deepEqual(at(parseReminderTimes("")), ["09:00", "13:00", "20:00"]);
+    assert.deepEqual(at(parseReminderTimes("25,-3")), ["09:00", "13:00", "20:00"]);
   });
 
-  test("sorts, de-duplicates and caps the hours", () => {
-    assert.deepEqual(parseReminderHours("20, 9, 13, 9"), [9, 13, 20]);
-    assert.equal(parseReminderHours("1,2,3,4,5,6,7,8").length, 6);
+  test("sorts, de-duplicates and caps the times", () => {
+    assert.deepEqual(at(parseReminderTimes("20, 9, 13, 9")), ["09:00", "13:00", "20:00"]);
+    assert.equal(parseReminderTimes("1,2,3,4,5,6,7,8").length, 6);
+  });
+
+  test("minutes are kept, and the older hours-only setting still reads", () => {
+    assert.deepEqual(at(parseReminderTimes("8:45,13:00,20:00")), ["08:45", "13:00", "20:00"]);
+    // Written before minute precision existed — it must not need migrating.
+    assert.deepEqual(at(parseReminderTimes("9,13,20")), ["09:00", "13:00", "20:00"]);
+    assert.deepEqual(at(parseReminderTimes("8:45,8:45")), ["08:45"]);
+    assert.deepEqual(at(parseReminderTimes("8:60,9:99")), ["09:00", "13:00", "20:00"]);
+  });
+
+  test("08:45 fires at 08:45 and not at 09:00", () => {
+    const fire = (iso: string) =>
+      dueReminder({ now: new Date(iso), timezone: "UTC", reminderHours: "8:45,13:00,20:00" });
+
+    assert.equal(fire("2026-08-19T08:44:00Z"), null, "not a minute early");
+    assert.equal(fire("2026-08-19T08:45:00Z")?.slot, "kickoff");
+    assert.equal(fire("2026-08-19T08:50:00Z")?.slot, "kickoff");
+    assert.equal(fire("2026-08-19T09:20:00Z"), null, "past the grace window");
+  });
+
+  test("a learner's own clock decides when 08:45 is", () => {
+    // The bug this fixes: an account left on UTC gets its morning nudge in the
+    // small hours, five hours out.
+    const fire = (timezone: string) =>
+      dueReminder({
+        now: new Date("2026-08-19T03:45:00Z"),
+        timezone,
+        reminderHours: "8:45,13:00,20:00",
+      });
+
+    assert.equal(fire("UTC"), null);
+    assert.equal(fire("Etc/GMT-5")?.slot, "kickoff", "08:45 where the learner is");
+  });
+
+  test("an offset or a name both resolve to a zone Intl accepts", () => {
+    assert.equal(normalizeTimezone("+5"), "Etc/GMT-5");
+    assert.equal(normalizeTimezone("UTC+5"), "Etc/GMT-5");
+    assert.equal(normalizeTimezone("-3"), "Etc/GMT+3");
+    assert.equal(normalizeTimezone("+0"), "UTC");
+    assert.equal(normalizeTimezone("Asia/Almaty"), "Asia/Almaty");
+    assert.equal(normalizeTimezone("Mars/Olympus"), null);
+    assert.equal(normalizeTimezone("+20"), null);
+  });
+
+  test("a timezone reads back with its offset, so a wrong one is obvious", () => {
+    const noon = new Date("2026-08-19T12:00:00Z");
+    assert.equal(describeTimezone("Etc/GMT-5", noon), "Etc/GMT-5 (UTC+5, 17:00 now)");
+    assert.equal(describeTimezone("UTC", noon), "UTC (UTC+0, 12:00 now)");
   });
 
   test("assigns first/last their role regardless of the clock", () => {
     // A night learner's day opens at 22:00 and closes at 07:00.
     assert.deepEqual(scheduleFor("22,1,7").slots, ["kickoff", "micro", "closeout"]);
+    assert.deepEqual(scheduleFor("8:45,13,20").slots, ["kickoff", "micro", "closeout"]);
     assert.deepEqual(scheduleFor("9").slots, ["kickoff"]);
     assert.deepEqual(scheduleFor("21").slots, ["closeout"]);
   });
@@ -543,14 +607,15 @@ describe("reminder scheduling", () => {
 
   test("fires inside the grace window and not before the hour", () => {
     const hours = "9,13,20";
-    const at = (iso: string) => dueReminder({ now: new Date(iso), timezone: "UTC", reminderHours: hours });
+    const fire = (iso: string) =>
+      dueReminder({ now: new Date(iso), timezone: "UTC", reminderHours: hours });
 
-    assert.equal(at("2026-08-19T09:00:00Z")?.slot, "kickoff");
-    assert.equal(at("2026-08-19T09:25:00Z")?.slot, "kickoff");
-    assert.equal(at("2026-08-19T09:45:00Z"), null, "past the grace window");
-    assert.equal(at("2026-08-19T08:59:00Z"), null, "an hour must not fire early");
-    assert.equal(at("2026-08-19T13:05:00Z")?.slot, "micro");
-    assert.equal(at("2026-08-19T20:05:00Z")?.slot, "closeout");
+    assert.equal(fire("2026-08-19T09:00:00Z")?.slot, "kickoff");
+    assert.equal(fire("2026-08-19T09:25:00Z")?.slot, "kickoff");
+    assert.equal(fire("2026-08-19T09:45:00Z"), null, "past the grace window");
+    assert.equal(fire("2026-08-19T08:59:00Z"), null, "an hour must not fire early");
+    assert.equal(fire("2026-08-19T13:05:00Z")?.slot, "micro");
+    assert.equal(fire("2026-08-19T20:05:00Z")?.slot, "closeout");
   });
 
   test("a missed slot is not delivered late alongside the current one", () => {
@@ -570,7 +635,7 @@ describe("reminder scheduling", () => {
       timezone: "UTC",
       reminderHours: "9,13,20",
     })!;
-    assert.equal(due.dedupeKey("u1", "2026-08-19"), "reminder:u1:2026-08-19:13");
+    assert.equal(due.dedupeKey("u1", "2026-08-19"), "reminder:u1:2026-08-19:13:00");
     assert.notEqual(due.dedupeKey("u1", "2026-08-19"), due.dedupeKey("u1", "2026-08-20"));
   });
 });
@@ -620,6 +685,17 @@ describe("reminder wording", () => {
   test("nudges carrying learner text are left for the caller to escape", () => {
     const nudge = composeNudge({ ...base, continueLesson: "Ser_vs_estar" });
     assert.notEqual(nudge.preformatted, true);
+  });
+
+  test("an evening that studied but never touched the plan is not congratulated", () => {
+    // "Good work today — 0/5 done" is a contradiction, and reads as a bot that
+    // is not paying attention.
+    const nudge = composeNudge({ ...base, slot: "closeout", studiedToday: true, itemsRemaining: 5, totalItems: 5 });
+    assert.ok(!nudge.body.includes("Good work"));
+    assert.ok(!nudge.body.includes("0/5"));
+
+    const partial = composeNudge({ ...base, slot: "closeout", studiedToday: true, itemsRemaining: 2, totalItems: 5 });
+    assert.ok(partial.body.includes("3/5"));
   });
 
   test("an empty evening warns about the streak specifically", () => {

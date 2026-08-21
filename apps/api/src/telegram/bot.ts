@@ -2,7 +2,9 @@ import {
   LESSON_SECTIONS,
   overallScore,
   parseLevel,
-  parseReminderHours,
+  describeTimezone,
+  normalizeTimezone,
+  parseReminderTimes,
   type LessonSection,
   type TutorScenario,
 } from "@lingoza/engine";
@@ -15,7 +17,8 @@ import {
   type InlineKeyboard,
 } from "./client.js";
 import { ensureProgress, getDashboard } from "../services/progress.js";
-import { getDailySession, getHome } from "../services/planner.js";
+import { completeDailyItem, getDailySession, getHome } from "../services/planner.js";
+import { currentDailyItem } from "../services/dailyProgress.js";
 import { getDueQueue, reviewVocabulary } from "../services/vocabulary.js";
 import { completeLessonSection, getLesson, getNextLesson, startLesson } from "../services/learning.js";
 import { submitExercise } from "../services/assessment.js";
@@ -202,6 +205,9 @@ async function handleMessage(message: NonNullable<TelegramUpdate["message"]>): P
     case "/remind":
     case "/reminders":
       return sendReminderSettings(chat.id, user.id, args.join(" "));
+    case "/timezone":
+    case "/tz":
+      return sendTimezoneSettings(chat.id, user.id, args.join(" "));
     case "/help":
       return sendWelcome(chat.id, user.displayName);
     default:
@@ -479,11 +485,30 @@ function renderSection(lesson: NonNullable<Awaited<ReturnType<typeof getLesson>>
   }
 }
 
+/**
+ * One card, drawn from whatever today's plan is currently asking for.
+ *
+ * The counts in the plan are budgets rather than decoration. While the review
+ * item is open the card serves words that are genuinely due; once its
+ * allocation is spent the vocabulary item takes over and serves new ones. That
+ * is what keeps "Review 10 words" to ten words instead of running until the
+ * whole queue — thirty-four of them — happens to empty.
+ */
 async function sendReviewCard(chatId: number, userId: string): Promise<void> {
-  const queue = await getDueQueue(userId, 1);
+  const planned = await currentDailyItem(userId, ["review", "vocabulary"]);
+  const queue = await getDueQueue(userId, 1, {
+    only: planned?.kind === "review" ? "due" : planned?.kind === "vocabulary" ? "new" : undefined,
+  });
   const item = queue[0];
 
   if (!item) {
+    // The material ran out before the budget did — the plan overestimated what
+    // was there. Close the item out and move on rather than stalling on it.
+    if (planned) {
+      const session = await completeDailyItem(userId, planned.id);
+      const next = session.items.find((i) => !i.completed);
+      if (next) return handOff(chatId, userId, planned.title, next);
+    }
     await telegram.sendMessage({
       chatId,
       text: "Nothing is due for review right now. Well done — come back later.",
@@ -492,15 +517,43 @@ async function sendReviewCard(chatId: number, userId: string): Promise<void> {
     return;
   }
 
+  const counter =
+    planned?.quantity != null
+      ? `_${Math.min(planned.progress + 1, planned.quantity)} of ${planned.quantity}_\n\n`
+      : "";
+
   await telegram.sendMessage({
     chatId,
     text:
+      counter +
       `*${escapeMarkdown(item.word.spanish)}*\n` +
       `_${escapeMarkdown(item.word.pronunciation)}_\n\n` +
       (item.isNew ? "🆕 New word\n\n" : "") +
       "Do you remember what this means?",
     keyboard: [[{ text: "👁 Show answer", callback_data: `show:${item.word.id}` }], [{ text: "🏠 Menu", callback_data: "menu" }]],
   });
+}
+
+/**
+ * Close one item of today's plan and open the next, without making the learner
+ * find their way back to the plan and tap again.
+ */
+async function handOff(
+  chatId: number,
+  userId: string,
+  finishedTitle: string,
+  next: { id: string; title: string; rationale: string; minutes: number },
+): Promise<void> {
+  await telegram.sendMessage({
+    chatId,
+    text:
+      `✅ *${escapeMarkdown(finishedTitle)}* — done.\n\n` +
+      `Next up: *${escapeMarkdown(next.title)}* — ${next.minutes} min\n` +
+      `_${escapeMarkdown(next.rationale)}_`,
+    keyboard: [[{ text: "📋 Today's plan", callback_data: "daily" }], [{ text: "🏠 Menu", callback_data: "menu" }]],
+  });
+
+  await startDailyItem(chatId, userId, next.id);
 }
 
 /** /hook <word> — look up the memory hook for a specific word. */
@@ -1668,16 +1721,16 @@ async function sendStats(chatId: number, userId: string): Promise<void> {
  * (`/remind 8 13 21`); with none, the buttons cover the common shapes.
  */
 async function sendReminderSettings(chatId: number, userId: string, args = ""): Promise<void> {
-  const requested = parseHourArgs(args);
+  const requested = parseTimeArgs(args);
 
   const settings = requested
-    ? await updateReminderSettings(userId, { enabled: true, hours: requested })
+    ? await updateReminderSettings(userId, { enabled: true, times: requested })
     : await getReminderSettings(userId);
 
   const lines = requested ? ["✅ *Reminders updated*", ""] : ["🔔 *Study reminders*", ""];
 
   if (settings.enabled) {
-    lines.push(`On — ${settings.description} (${settings.timezone})`, "");
+    lines.push(`On — ${settings.description}`, "");
     lines.push("What each one does:");
     lines.push("• *Morning* — today's plan, one tap to start");
     lines.push("• *Midday* — a single word to recall, right in the chat");
@@ -1686,7 +1739,16 @@ async function sendReminderSettings(chatId: number, userId: string, args = ""): 
     lines.push("Currently *off*. Nothing will be sent.");
   }
 
-  lines.push("", "Set your own with `/remind 8 13 21`.");
+  // The times are meaningless without the zone they are read in, so it is
+  // stated every time rather than buried in a separate screen. An account
+  // still on the default UTC is told so plainly — that is the difference
+  // between 08:45 and a message at three in the morning.
+  lines.push("", `🌍 Times are ${escapeMarkdown(describeTimezone(settings.timezone))}`);
+  if (settings.timezone === "UTC") {
+    lines.push("_That is probably not your clock — set it with_ `/timezone +5`.");
+  }
+
+  lines.push("", "Set your own with `/remind 8:45 13 20`.");
 
   const keyboard: InlineKeyboard = [
     [
@@ -1697,6 +1759,7 @@ async function sendReminderSettings(chatId: number, userId: string, args = ""): 
       { text: "🌆 10 · 15 · 22", callback_data: "remset:late" },
       { text: "🌙 12 · 18 · 23", callback_data: "remset:owl" },
     ],
+    [{ text: "🌍 Timezone", callback_data: "tz" }],
     settings.enabled
       ? [
           { text: "📨 Send one now", callback_data: "remtest" },
@@ -1707,6 +1770,58 @@ async function sendReminderSettings(chatId: number, userId: string, args = ""): 
   ];
 
   await telegram.sendMessage({ chatId, text: lines.join("\n"), keyboard });
+}
+
+/**
+ * /timezone — which clock the reminder times are read against.
+ *
+ * Telegram never tells the bot where a chat is, so an account created here
+ * starts on UTC and stays there. Until this is set, "remind me at 08:45" means
+ * 08:45 UTC, which for a learner five hours ahead arrives at a quarter to two
+ * in the morning.
+ */
+async function sendTimezoneSettings(chatId: number, userId: string, args = ""): Promise<void> {
+  const requested = args.trim();
+
+  if (requested) {
+    const resolved = normalizeTimezone(requested);
+    if (!resolved) {
+      await telegram.sendMessage({
+        chatId,
+        text:
+          `I don't recognise *${escapeMarkdown(requested)}*.\n\n` +
+          "Give me an offset like `+5`, or a city name like `Asia/Almaty` — " +
+          "a name is better, because it follows daylight saving on its own.",
+      });
+      return;
+    }
+
+    const settings = await updateReminderSettings(userId, { timezone: resolved });
+    await telegram.sendMessage({
+      chatId,
+      text:
+        `✅ Timezone set — ${escapeMarkdown(describeTimezone(settings.timezone))}.\n\n` +
+        `Your reminders: ${escapeMarkdown(settings.description)} local time.`,
+      keyboard: [
+        [{ text: "🔔 Reminder times", callback_data: "rem" }],
+        [{ text: "🏠 Menu", callback_data: "menu" }],
+      ],
+    });
+    return;
+  }
+
+  const settings = await getReminderSettings(userId);
+  await telegram.sendMessage({
+    chatId,
+    text:
+      "🌍 *Timezone*\n\n" +
+      `Right now: ${escapeMarkdown(describeTimezone(settings.timezone))}\n\n` +
+      "Everything scheduled — reminders, what counts as \"today\" for your streak — " +
+      "is read against this clock.\n\n" +
+      "Set it with `/timezone Asia/Almaty` or `/timezone +5`. " +
+      "A city name is better: it follows daylight saving without you touching it.",
+    keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+  });
 }
 
 const REMINDER_PRESETS: Record<string, number[]> = {
@@ -1720,10 +1835,13 @@ async function applyReminderPreset(chatId: number, userId: string, preset: strin
   const hours = REMINDER_PRESETS[preset];
   if (!hours) return;
 
-  const settings = await updateReminderSettings(userId, { enabled: true, hours });
+  const settings = await updateReminderSettings(userId, {
+    enabled: true,
+    times: hours.map((hour) => hour * 60),
+  });
   await telegram.sendMessage({
     chatId,
-    text: `✅ Reminders set to *${settings.description}* (${settings.timezone}).`,
+    text: `✅ Reminders set to *${settings.description}* — ${escapeMarkdown(describeTimezone(settings.timezone))}.`,
     keyboard: [
       [{ text: "📨 Send one now", callback_data: "remtest" }],
       [{ text: "🏠 Menu", callback_data: "menu" }],
@@ -1754,18 +1872,16 @@ async function sendReminderPreview(chatId: number, userId: string): Promise<void
 }
 
 /** "8 13 21" or "8,13,21" → [8, 13, 21]; anything else → null. */
-function parseHourArgs(args: string): number[] | null {
+/** `/remind 8:45 13 20` → minutes past midnight, or null if it is not a time list. */
+function parseTimeArgs(args: string): number[] | null {
   const trimmed = args.trim();
   if (!trimmed) return null;
   if (!/^[\d\s,:]+$/.test(trimmed)) return null;
 
-  // "9:00" is a natural thing to type; only the hour is significant.
-  const hours = trimmed
-    .split(/[\s,]+/)
-    .map((part) => Number.parseInt(part.split(":")[0] ?? "", 10))
-    .filter((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23);
-
-  return hours.length > 0 ? parseReminderHours(hours.join(",")) : null;
+  const times = parseReminderTimes(trimmed.split(/[\s,]+/).join(","));
+  // parseReminderTimes falls back to the default schedule when nothing parses,
+  // which here would silently ignore what the learner typed.
+  return trimmed.split(/[\s,]+/).some((part) => /^\d{1,2}(:\d{1,2})?$/.test(part)) ? times : null;
 }
 
 async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {
@@ -1891,6 +2007,9 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
     case "rem":
       return sendReminderSettings(chatId, user.id);
 
+    case "tz":
+      return sendTimezoneSettings(chatId, user.id);
+
     case "remset":
       return applyReminderPreset(chatId, user.id, args[0]!);
 
@@ -1996,10 +2115,24 @@ async function gradeWord(
   const days = result.intervalDays;
   const when = days < 1 ? "later today" : days < 2 ? "tomorrow" : `in ${Math.round(days)} days`;
 
+  // reviewVocabulary already spent this card against today's plan; all that is
+  // left here is to say where that leaves the learner.
+  const advanced = result.plan;
+  const left =
+    advanced && !advanced.justCompleted && advanced.remaining
+      ? `\n_${advanced.remaining} more to go._`
+      : "";
+
   await telegram.sendMessage({
     chatId,
-    text: `${result.correct ? "✅" : "🔁"} *${escapeMarkdown(result.word.spanish)}* — next review ${when}.`,
+    text: `${result.correct ? "✅" : "🔁"} *${escapeMarkdown(result.word.spanish)}* — next review ${when}.${left}`,
   });
+
+  if (advanced?.justCompleted) {
+    return advanced.next
+      ? handOff(chatId, userId, advanced.item.title, advanced.next)
+      : sendDaily(chatId, userId);
+  }
 
   // Straight into the next card: the flow should never require another tap.
   await sendReviewCard(chatId, userId);
